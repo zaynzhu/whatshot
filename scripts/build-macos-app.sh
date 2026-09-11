@@ -33,7 +33,6 @@ plutil -insert CFBundleShortVersionString -string 1.0.0 "$INFO_PLIST"
 plutil -insert CFBundleVersion -string 1 "$INFO_PLIST"
 plutil -insert LSApplicationCategoryType -string public.app-category.entertainment "$INFO_PLIST"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$INFO_PLIST"
-plutil -insert LSUIElement -bool true "$INFO_PLIST"
 plutil -insert NSHighResolutionCapable -bool true "$INFO_PLIST"
 
 codesign --force --deep --sign - "$STAGING_APP"
