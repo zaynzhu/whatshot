@@ -1,0 +1,419 @@
+import Foundation
+import SQLite3
+
+/// 本地库读写：条目 upsert、历史观察写入与查询
+public struct VideoRepository: Sendable {
+  let queue: DatabaseQueue
+
+  public init(queue: DatabaseQueue) {
+    self.queue = queue
+  }
+
+  // MARK: - 写入
+
+  /// upsert 条目并记录观察。返回是否发生了用户关心的变化（ejs/seed/评分）
+  public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date) async throws -> Bool {
+    let nowSeconds = Int(now.timeIntervalSince1970)
+    let videoID = video.id
+    let scopeRaw = chartScope?.rawValue
+    let seedCount = video.seedCount
+    let netdiskCount = video.netdiskCount
+    let ejs = video.episodeStatus
+    let douban = video.doubanScore
+    let imdb = video.imdbScore
+
+    return try await queue.run { db in
+      let changed: Bool
+      // 1. 读旧值判断是否变化；defer 捕获变量值，禁止复用同一变量挂两个 defer
+      let selectStmt = try db.prepare("SELECT episode_status, seed_count, netdisk_count, douban_score, imdb_score FROM videos WHERE id = ?")
+      defer { sqlite3_finalize(selectStmt) }
+      try resetAndBind(selectStmt, videoID)
+      let previous = sqlite3_step(selectStmt) == SQLITE_ROW
+      let prevEjs = db.text(selectStmt, 0)
+      let prevSeed = db.int(selectStmt, 1)
+      let prevWp = db.int(selectStmt, 2)
+      let prevDouban = db.text(selectStmt, 3)
+      let prevImdb = db.text(selectStmt, 4)
+
+      changed = previous && (prevEjs != ejs || prevSeed != seedCount || prevWp != netdiskCount || prevDouban != douban || prevImdb != imdb)
+
+      // 2. upsert 条目
+      let upsert = """
+      INSERT INTO videos (id, kind, title, otitle, alias, douban_id, imdb_number, episode_status, episodes,
+        douban_score, imdb_score, poster_url, class_names, production_area, years, release_info,
+        director, performer, abstract, definition, seed_count, netdisk_count, seed_updated_at, source_updated_at,
+        first_seen_at, last_synced_at, last_detail_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+      kind=excluded.kind, title=excluded.title, otitle=excluded.otitle, alias=excluded.alias,
+      douban_id=excluded.douban_id, imdb_number=excluded.imdb_number,
+      episode_status=COALESCE(NULLIF(excluded.episode_status, ''), videos.episode_status),
+      episodes=CASE WHEN excluded.episodes != '0' AND excluded.episodes IS NOT NULL AND excluded.episodes != '' THEN excluded.episodes ELSE videos.episodes END,
+      douban_score=CASE WHEN excluded.douban_score IS NOT NULL AND excluded.douban_score != '' AND excluded.douban_score != '0' THEN excluded.douban_score ELSE videos.douban_score END,
+      imdb_score=CASE WHEN excluded.imdb_score IS NOT NULL AND excluded.imdb_score != '' AND excluded.imdb_score != '0' THEN excluded.imdb_score ELSE videos.imdb_score END,
+      seed_count=CASE WHEN excluded.seed_count > 0 THEN excluded.seed_count ELSE videos.seed_count END,
+      netdisk_count=CASE WHEN excluded.netdisk_count > 0 THEN excluded.netdisk_count ELSE videos.netdisk_count END,
+      seed_updated_at=COALESCE(excluded.seed_updated_at, videos.seed_updated_at),
+      poster_url=COALESCE(excluded.poster_url, videos.poster_url),
+      class_names=COALESCE(excluded.class_names, videos.class_names), production_area=COALESCE(excluded.production_area, videos.production_area),
+      years=COALESCE(excluded.years, videos.years), release_info=COALESCE(excluded.release_info, videos.release_info), director=COALESCE(excluded.director, videos.director),
+      performer=COALESCE(excluded.performer, videos.performer), abstract=COALESCE(excluded.abstract, videos.abstract), definition=COALESCE(NULLIF(excluded.definition, '@'), videos.definition),
+      last_synced_at=excluded.last_synced_at
+      """
+      let upsertStmt = try db.prepare(upsert)
+      defer { sqlite3_finalize(upsertStmt) }
+      bindVideo(upsertStmt, video, now: nowSeconds)
+      guard sqlite3_step(upsertStmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "条目写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
+      }
+
+      let obs = """
+      INSERT INTO observations (video_id, observed_at, chart_scope, chart_rank, ejs, seed_count, netdisk_count, douban_score, imdb_score)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      """
+      let obsStmt = try db.prepare(obs)
+      defer { sqlite3_finalize(obsStmt) }
+      SQLiteDatabase.bind(obsStmt, 1, videoID)
+      SQLiteDatabase.bind(obsStmt, 2, nowSeconds)
+      SQLiteDatabase.bind(obsStmt, 3, scopeRaw)
+      SQLiteDatabase.bind(obsStmt, 4, chartRank)
+      SQLiteDatabase.bind(obsStmt, 5, ejs)
+      SQLiteDatabase.bind(obsStmt, 6, seedCount)
+      SQLiteDatabase.bind(obsStmt, 7, netdiskCount)
+      SQLiteDatabase.bind(obsStmt, 8, douban)
+      SQLiteDatabase.bind(obsStmt, 9, imdb)
+      guard sqlite3_step(obsStmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "观察写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
+      }
+      return changed
+    }
+  }
+
+  /// 标记条目刚拉过详情
+  public func markDetailSynced(videoID: Int, at date: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("UPDATE videos SET last_detail_at = ? WHERE id = ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(date.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 2, videoID)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "标记详情时间失败")
+      }
+    }
+  }
+
+  /// 记录一次同步运行，返回 run ID
+  public func startSyncRun(at date: Date) async throws -> Int {
+    try await queue.run { db in
+      let stmt = try db.prepare("INSERT INTO sync_runs (started_at, status) VALUES (?, 'running')")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(date.timeIntervalSince1970))
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "同步记录写入失败")
+      }
+      return Int(sqlite3_last_insert_rowid(db.handle))
+    }
+  }
+
+  public func finishSyncRun(id: Int, status: String, fetched: Int, changed: Int, error: String?, at date: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("UPDATE sync_runs SET finished_at=?, status=?, fetched=?, changed=?, error=? WHERE id=?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(date.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 2, status)
+      SQLiteDatabase.bind(stmt, 3, fetched)
+      SQLiteDatabase.bind(stmt, 4, changed)
+      SQLiteDatabase.bind(stmt, 5, error)
+      SQLiteDatabase.bind(stmt, 6, id)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "同步记录收尾失败")
+      }
+    }
+  }
+
+  /// 启动时收尾中断遗留的 running 同步记录（对齐 whatsnew 语义）
+  public func recoverInterruptedRuns(at date: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        UPDATE sync_runs SET finished_at=?, status='failed',
+          error='同步进程中断，已自动收尾；请重新触发同步'
+        WHERE status='running'
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(date.timeIntervalSince1970))
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "中断记录收尾失败")
+      }
+    }
+  }
+
+  // MARK: - 查询
+
+  /// 活跃条目列表（电影或剧集），按 seed_updated_at 降序 = 站点"最近更新"顺序
+  public func listVideos(kind: ButaiKind, limit: Int, offset: Int) async throws -> [VideoRow] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT id, kind, title, episode_status, episodes, seed_count, netdisk_count, douban_score,
+               imdb_score, poster_url, last_synced_at,
+               otitle, alias, douban_id, imdb_number, class_names, production_area,
+               years, release_info, director, performer, abstract, definition,
+               seed_updated_at, source_updated_at
+        FROM videos WHERE kind = ? ORDER BY seed_updated_at DESC LIMIT ? OFFSET ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, kind.rawValue)
+      SQLiteDatabase.bind(stmt, 2, limit)
+      SQLiteDatabase.bind(stmt, 3, offset)
+      var rows: [VideoRow] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        rows.append(videoRow(stmt, db))
+      }
+      return rows
+    }
+  }
+
+  /// 单条详情（含详情字段）
+  public func video(id: Int) async throws -> VideoRow? {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT id, kind, title, episode_status, episodes, seed_count, netdisk_count, douban_score,
+               imdb_score, poster_url, last_synced_at,
+               otitle, alias, douban_id, imdb_number, class_names, production_area,
+               years, release_info, director, performer, abstract, definition,
+               seed_updated_at, source_updated_at
+        FROM videos WHERE id = ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, id)
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+      return videoRow(stmt, db)
+    }
+  }
+
+  /// 单条详情（含详情字段）
+  public struct VideoRow: Sendable, Equatable {
+    public var id: Int
+    public var kind: ButaiKind
+    public var title: String
+    public var originalTitle: String?
+    public var alias: String?
+    public var doubanId: Int?
+    public var imdbNumber: String?
+    public var episodeStatus: String
+    public var episodes: String
+    public var doubanScore: String?
+    public var imdbScore: String?
+    public var posterURL: String?
+    public var classNames: String?
+    public var productionArea: String?
+    public var years: String?
+    public var releaseInfo: String?
+    public var director: String?
+    public var performer: String?
+    public var abstract: String?
+    public var definition: String?
+    public var seedCount: Int
+    public var netdiskCount: Int
+    public var seedUpdatedAt: String?
+    public var sourceUpdatedAt: String?
+    public var lastSyncedAt: Date
+  }
+
+  /// 历史时间线：某条目的按时间观察
+  public struct ObservationRow: Sendable, Equatable {
+    public var observedAt: Date
+    public var chartScope: ButaiChartScope?
+    public var chartRank: Int?
+    public var ejs: String?
+    public var seedCount: Int?
+    public var netdiskCount: Int?
+    public var doubanScore: String?
+    public var imdbScore: String?
+  }
+
+  public func observations(videoID: Int, limit: Int = 200) async throws -> [ObservationRow] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT observed_at, chart_scope, chart_rank, ejs, seed_count, netdisk_count, douban_score, imdb_score
+        FROM observations WHERE video_id = ? ORDER BY observed_at DESC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, videoID)
+      SQLiteDatabase.bind(stmt, 2, limit)
+      var rows: [ObservationRow] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        rows.append(ObservationRow(
+          observedAt: date(db.int(stmt, 0)),
+          chartScope: db.text(stmt, 1).flatMap(ButaiChartScope.init(rawValue:)),
+          chartRank: db.int(stmt, 2),
+          ejs: db.text(stmt, 3),
+          seedCount: db.int(stmt, 4),
+          netdiskCount: db.int(stmt, 5),
+          doubanScore: db.text(stmt, 6),
+          imdbScore: db.text(stmt, 7)
+        ))
+      }
+      return rows
+    }
+  }
+
+  /// 某个榜的最新一次快照（名次排序）
+  public func latestChart(_ scope: ButaiChartScope) async throws -> [(rank: Int, video: VideoRow)] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT o.chart_rank, v.id, v.kind, v.title, v.episode_status, v.episodes, v.seed_count,
+               v.netdisk_count, v.douban_score, v.imdb_score, v.poster_url, v.last_synced_at,
+               v.otitle, v.alias, v.douban_id, v.imdb_number, v.class_names, v.production_area,
+               v.years, v.release_info, v.director, v.performer, v.abstract, v.definition,
+               v.seed_updated_at, v.source_updated_at
+        FROM observations o JOIN videos v ON v.id = o.video_id
+        WHERE o.chart_scope = ?
+          AND o.observed_at = (SELECT MAX(observed_at) FROM observations WHERE chart_scope = ?)
+        ORDER BY o.chart_rank ASC
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, scope.rawValue)
+      SQLiteDatabase.bind(stmt, 2, scope.rawValue)
+      var rows: [(rank: Int, video: VideoRow)] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        let rank = db.int(stmt, 0) ?? 0
+        rows.append((rank, videoRow(stmt, db, offset: 1)))
+      }
+      return rows
+    }
+  }
+
+  /// 需要补拉详情的条目：从未拉过详情或详情距上次超过指定小时数，按 seed_updated_at 新到旧。
+  /// 返回豆瓣 ID（详情接口的 id 参数是站点 idcode/豆瓣 ID）
+  public func detailRefreshCandidates(limit: Int, detailStaleHours: Int) async throws -> [Int] {
+    try await queue.run { db in
+      let threshold = Int(Date().timeIntervalSince1970) - detailStaleHours * 3600
+      let stmt = try db.prepare("""
+        SELECT COALESCE(douban_id, 0) FROM videos
+        WHERE last_detail_at IS NULL OR last_detail_at < ?
+        ORDER BY seed_updated_at DESC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, threshold)
+      SQLiteDatabase.bind(stmt, 2, limit)
+      var ids: [Int] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let id = db.int(stmt, 0), id > 0 { ids.append(id) }
+      }
+      return ids
+    }
+  }
+
+  /// 观察历史保留天数裁剪，返回删除行数
+  public func pruneObservations(keepDays: Int, now: Date) async throws -> Int {
+    try await queue.run { db in
+      let cutoff = Int(now.timeIntervalSince1970) - keepDays * 86400
+      let stmt = try db.prepare("DELETE FROM observations WHERE observed_at < ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, cutoff)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "历史裁剪失败")
+      }
+      return Int(sqlite3_changes(db.handle))
+    }
+  }
+
+  /// 数据库文件大小字节数
+  public func databaseFileSize() async throws -> Int64 {
+    try await queue.run { db in
+      let stmt = try db.prepare("PRAGMA page_count")
+      defer { sqlite3_finalize(stmt) }
+      guard sqlite3_step(stmt) == SQLITE_ROW, let pages = db.int(stmt, 0) else { return 0 }
+      return Int64(pages) * 4096
+    }
+  }
+
+  /// 最近一次成功（success 或 warning）同步时间
+  public func lastSuccessfulSync() async throws -> Date? {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT MAX(finished_at) FROM sync_runs WHERE status IN ('success','warning')
+      """)
+      defer { sqlite3_finalize(stmt) }
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+      return date(db.int(stmt, 0))
+    }
+  }
+
+  // MARK: - 绑定辅助
+
+  func bindVideo(_ stmt: OpaquePointer, _ video: ButaiVideo, now: Int) {
+    SQLiteDatabase.bind(stmt, 1, video.id)
+    SQLiteDatabase.bind(stmt, 2, video.kind.rawValue)
+    SQLiteDatabase.bind(stmt, 3, video.title)
+    SQLiteDatabase.bind(stmt, 4, video.originalTitle)
+    SQLiteDatabase.bind(stmt, 5, video.alias)
+    SQLiteDatabase.bind(stmt, 6, video.doubanId)
+    SQLiteDatabase.bind(stmt, 7, video.imdbNumber)
+    SQLiteDatabase.bind(stmt, 8, video.episodeStatus)
+    SQLiteDatabase.bind(stmt, 9, video.episodes)
+    SQLiteDatabase.bind(stmt, 10, video.doubanScore)
+    SQLiteDatabase.bind(stmt, 11, video.imdbScore)
+    SQLiteDatabase.bind(stmt, 12, video.posterURL)
+    SQLiteDatabase.bind(stmt, 13, video.classNames)
+    SQLiteDatabase.bind(stmt, 14, video.productionArea)
+    SQLiteDatabase.bind(stmt, 15, video.years)
+    SQLiteDatabase.bind(stmt, 16, video.release)
+    SQLiteDatabase.bind(stmt, 17, video.director)
+    SQLiteDatabase.bind(stmt, 18, video.performer)
+    SQLiteDatabase.bind(stmt, 19, video.abstract)
+    SQLiteDatabase.bind(stmt, 20, video.definition)
+    SQLiteDatabase.bind(stmt, 21, video.seedCount)
+    SQLiteDatabase.bind(stmt, 22, video.netdiskCount)
+    SQLiteDatabase.bind(stmt, 23, video.seedUpdatedAt)
+    SQLiteDatabase.bind(stmt, 24, video.updatedAt)
+    SQLiteDatabase.bind(stmt, 25, now)
+    SQLiteDatabase.bind(stmt, 26, now)
+    SQLiteDatabase.bind(stmt, 27, nil as Int?)
+  }
+
+  func resetAndBind(_ stmt: OpaquePointer, _ id: Int) throws {
+    sqlite3_reset(stmt)
+    SQLiteDatabase.bind(stmt, 1, id)
+  }
+
+  func date(_ seconds: Int?) -> Date {
+    Date(timeIntervalSince1970: TimeInterval(seconds ?? 0))
+  }
+
+  /// 从当前行读 VideoRow。SELECT 列序固定：
+  /// 0 id, 1 kind, 2 title, 3 episode_status, 4 episodes, 5 seed_count, 6 netdisk_count,
+  /// 7 douban_score, 8 imdb_score, 9 poster_url, 10 last_synced_at,
+  /// 11 otitle, 12 alias, 13 douban_id, 14 imdb_number, 15 class_names, 16 production_area,
+  /// 17 years, 18 release_info, 19 director, 20 performer, 21 abstract, 22 definition,
+  /// 23 seed_updated_at, 24 source_updated_at
+  func videoRow(_ stmt: OpaquePointer, _ db: SQLiteDatabase, offset: Int32 = 0) -> VideoRow {
+    VideoRow(
+      id: db.int(stmt, offset + 0) ?? 0,
+      kind: ButaiKind(rawValue: db.int(stmt, offset + 1) ?? 2) ?? .tvSeries,
+      title: db.text(stmt, offset + 2) ?? "",
+      originalTitle: db.text(stmt, offset + 11),
+      alias: db.text(stmt, offset + 12),
+      doubanId: db.int(stmt, offset + 13),
+      imdbNumber: db.text(stmt, offset + 14),
+      episodeStatus: db.text(stmt, offset + 3) ?? "",
+      episodes: db.text(stmt, offset + 4) ?? "",
+      doubanScore: db.text(stmt, offset + 7),
+      imdbScore: db.text(stmt, offset + 8),
+      posterURL: db.text(stmt, offset + 9),
+      classNames: db.text(stmt, offset + 15),
+      productionArea: db.text(stmt, offset + 16),
+      years: db.text(stmt, offset + 17),
+      releaseInfo: db.text(stmt, offset + 18),
+      director: db.text(stmt, offset + 19),
+      performer: db.text(stmt, offset + 20),
+      abstract: db.text(stmt, offset + 21),
+      definition: db.text(stmt, offset + 22),
+      seedCount: db.int(stmt, offset + 5) ?? 0,
+      netdiskCount: db.int(stmt, offset + 6) ?? 0,
+      seedUpdatedAt: db.text(stmt, offset + 23),
+      sourceUpdatedAt: db.text(stmt, offset + 24),
+      lastSyncedAt: date(db.int(stmt, offset + 10))
+    )
+  }
+}
