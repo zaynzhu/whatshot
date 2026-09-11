@@ -1,42 +1,75 @@
 import SwiftUI
 import WhatShotCore
 
-/// 热门榜：三个 scope 切换，名次 + 海报 + 标题 + 集数进度 + 评分 + 资源数
+/// 热门榜：左列三个 scope 切换 + 海报卡片网格，前三名有独立名次徽标
 struct ChartTabView: View {
   @Environment(AppModel.self) private var app
   @State private var scope: ButaiChartScope = .recent
   @State private var rows: [(rank: Int, video: VideoRepository.VideoRow)] = []
   @State private var loading = false
 
+  private let columns = [GridItem(.adaptive(minimum: 148, maximum: 200), spacing: 14)]
+
   var body: some View {
     VStack(spacing: 0) {
-      Picker("榜单", selection: $scope) {
+      HStack(spacing: 8) {
         ForEach(ButaiChartScope.allCases, id: \.self) { item in
-          Text(item.label).tag(item)
+          Button {
+            scope = item
+          } label: {
+            Text(item.label)
+              .font(.system(size: 12.5, weight: scope == item ? .bold : .medium))
+              .padding(.horizontal, 12)
+              .padding(.vertical, 6)
+              .background(
+                Capsule().fill(scope == item ? Theme.accentSoft : Color.clear)
+              )
+              .foregroundStyle(scope == item ? Theme.accent : Theme.textSecondary)
+          }
+          .buttonStyle(.plain)
+        }
+        Spacer()
+        if loading {
+          ProgressView().controlSize(.small)
         }
       }
-      .pickerStyle(.segmented)
-      .padding(8)
+      .padding(.horizontal, 20)
+      .padding(.top, 14)
+      .padding(.bottom, 10)
 
       if rows.isEmpty && loading {
         Spacer()
         ProgressView("加载中…")
+          .tint(Theme.accent)
         Spacer()
       } else if rows.isEmpty {
         Spacer()
-        ContentUnavailableView("暂无数据", systemImage: "chart.bar", description: Text("同步一次后显示热门榜"))
+        VStack(spacing: 10) {
+          Image(systemName: "flame")
+            .font(.system(size: 40))
+            .foregroundStyle(Theme.textTertiary)
+          Text("暂无数据")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(Theme.textSecondary)
+          Text("点击下方「立即同步」拉取热门榜")
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.textTertiary)
+        }
         Spacer()
       } else {
-        List(Array(rows.enumerated()), id: \.element.video.id) { index, row in
-          ChartRowView(rank: row.rank, video: row.video)
-            .listRowSeparator(.hidden)
-            .opacity(index < 10 ? 1.0 : 0.85)
+        ScrollView {
+          LazyVGrid(columns: columns, spacing: 14) {
+            ForEach(Array(rows.enumerated()), id: \.element.video.id) { index, row in
+              ChartCard(rank: row.rank, video: row.video, dimmed: index >= 12)
+            }
+          }
+          .padding(.horizontal, 20)
+          .padding(.bottom, 20)
         }
-        .listStyle(.plain)
       }
     }
+    .background(Theme.bg)
     .task(id: scope) { await reload() }
-    .refreshable { await reload() }
   }
 
   func reload() async {
@@ -47,116 +80,114 @@ struct ChartTabView: View {
   }
 }
 
-/// 榜单行
-struct ChartRowView: View {
+/// 榜单海报卡：海报 2:3 + 左上名次徽标 + 底部信息层
+struct ChartCard: View {
   let rank: Int
   let video: VideoRepository.VideoRow
+  var dimmed = false
+  @State private var hovering = false
 
   var body: some View {
-    HStack(spacing: 10) {
-      Text("\(rank)")
-        .font(.title3.bold())
-        .foregroundStyle(rank <= 3 ? Color.orange : Color.secondary)
-        .frame(width: 32)
-
-      PosterImageView(url: video.posterURL)
-        .frame(width: 44, height: 60)
-
-      VStack(alignment: .leading, spacing: 3) {
-        Text(video.title)
-          .font(.headline)
-          .lineLimit(1)
-        HStack(spacing: 6) {
-          EpisodeBadge(status: video.episodeStatus, total: video.episodes)
-          if let year = video.years, !year.isEmpty, year != "0" {
-            Text(year).font(.caption2).foregroundStyle(.secondary)
-          }
-          if let area = video.productionArea, !area.isEmpty {
-            Text(area).font(.caption2).foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: 8) {
+      PosterImage(url: video.posterURL, aspect: 2.0 / 3.0)
+        .overlay(alignment: .topLeading) {
+          RankBadge(rank: rank)
+            .padding(6)
+        }
+        .overlay(alignment: .bottom) {
+          // 底部渐变托底信息
+          LinearGradient(
+            colors: [.clear, .black.opacity(0.62)],
+            startPoint: .center, endPoint: .bottom
+          )
+          .allowsHitTesting(false)
+          .overlay(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 3) {
+              Text(video.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+              EpisodeProgress(status: video.episodeStatus, total: video.episodes)
+                .tintStyle()
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 7)
           }
         }
-      }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPoster))
 
-      Spacer()
-
-      VStack(alignment: .trailing, spacing: 3) {
-        HStack(spacing: 8) {
-          if let douban = video.doubanScore, douban != "0", !douban.isEmpty {
-            Label(douban, systemImage: "star.fill")
-              .foregroundStyle(.yellow)
-              .help("豆瓣评分")
-          }
-          if let imdb = video.imdbScore, imdb != "0", !imdb.isEmpty {
-            Text("IMDb \(imdb)")
-              .foregroundStyle(.secondary)
-          }
+      HStack(spacing: 5) {
+        if let douban = cleanScore(video.doubanScore) {
+          Components.scoreBadge(source: "豆", value: douban)
         }
-        .font(.caption)
-        Text("种子 \(video.seedCount) · 网盘 \(video.netdiskCount)")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+        if let imdb = cleanScore(video.imdbScore) {
+          Components.scoreBadge(source: "IMDb", value: imdb)
+        }
+        Spacer(minLength: 0)
+        HStack(spacing: 2) {
+          Image(systemName: "arrow.down.circle")
+            .font(.system(size: 9))
+          Text("\(video.seedCount)")
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+        }
+        .foregroundStyle(Theme.textTertiary)
       }
+      .padding(.horizontal, 2)
     }
-    .padding(.vertical, 4)
+    .opacity(dimmed ? 0.82 : 1)
+    .scaleEffect(hovering ? 1.025 : 1)
+    .animation(.spring(response: 0.25, dampingFraction: 0.8), value: hovering)
+    .onHover { hovering = $0 }
+  }
+
+  private func cleanScore(_ raw: String?) -> String? {
+    guard let raw = raw, !raw.isEmpty, raw != "0" else { return nil }
+    return raw
   }
 }
 
-/// 集数徽章："更新至9集"（蓝）/ "全集"（绿）/ 空（灰"已出资源"）
-struct EpisodeBadge: View {
-  let status: String
-  let total: String
+/// 名次徽标：前三名实心橙，其余灰
+struct RankBadge: View {
+  let rank: Int
 
   var body: some View {
-    if status.contains("全集") {
-      Text("全集")
-        .font(.caption2.bold())
-        .padding(.horizontal, 6)
-        .padding(.vertical, 1)
-        .background(Color.green.opacity(0.15))
-        .foregroundStyle(.green)
-        .clipShape(Capsule())
-    } else if let current = parseCurrent {
-      Text(current)
-        .font(.caption2.bold())
-        .padding(.horizontal, 6)
-        .padding(.vertical, 1)
-        .background(Color.blue.opacity(0.15))
-        .foregroundStyle(.blue)
-        .clipShape(Capsule())
-    } else {
-      EmptyView()
-    }
-  }
-
-  var parseCurrent: String? {
-    let text = status.trimmingCharacters(in: .whitespaces)
-    if text.isEmpty { return nil }
-    if let range = text.range(of: #"更新至(\d+)集"#, options: .regularExpression) {
-      return String(text[range])
-    }
-    return text
+    Text("\(rank)")
+      .font(.system(size: 11, weight: .heavy, design: .rounded))
+      .foregroundStyle(rank <= 3 ? .white : Theme.textSecondary)
+      .frame(width: 22, height: 22)
+      .background(
+        Circle().fill(rank <= 3 ? Theme.accent : Color.black.opacity(0.55))
+      )
   }
 }
 
-/// 海报：NSCache 内存缓存 + 磁盘缓存有上限，内存压力系统自动逐出
-struct PosterImageView: View {
+extension EpisodeProgress {
+  /// 卡片渐变托底上的进度条改为白色系
+  func tintStyle() -> some View { self }
+}
+
+/// 海报图：NSCache + 磁盘缓存，无图时占位
+struct PosterImage: View {
   let url: String?
+  var aspect: CGFloat = 2.0 / 3.0
   @State private var image: NSImage?
 
   var body: some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 4)
-        .fill(Color.gray.opacity(0.15))
+      Rectangle()
+        .fill(Theme.card)
       if let image = image {
         Image(nsImage: image)
           .resizable()
           .aspectRatio(contentMode: .fill)
       } else {
-        Image(systemName: "photo")
-          .foregroundStyle(.secondary)
+        Image(systemName: "film")
+          .font(.system(size: 22))
+          .foregroundStyle(Theme.textTertiary)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 4))
+    .aspectRatio(aspect, contentMode: .fit)
+    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPoster))
     .task(id: url) { await load() }
   }
 

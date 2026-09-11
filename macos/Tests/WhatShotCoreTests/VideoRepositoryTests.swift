@@ -106,7 +106,7 @@ struct VideoRepositoryTests {
     #expect(movies.isEmpty)
   }
 
-  /// 详情候选按 seed_updated_at 新到旧
+  /// 详情候选按 seed_updated_at 新到旧，返回豆瓣 ID（详情接口参数）
   @Test func detailRefreshCandidates() async throws {
     let repo = try makeRepo()
     let now = Date()
@@ -116,6 +116,6 @@ struct VideoRepositoryTests {
       _ = try await repo.upsert(video, chartScope: nil, chartRank: nil, now: now)
     }
     let candidates = try await repo.detailRefreshCandidates(limit: 2, detailStaleHours: 168)
-    #expect(candidates == [3, 2])
+    #expect(candidates == [38000003, 38000002])
   }
 }

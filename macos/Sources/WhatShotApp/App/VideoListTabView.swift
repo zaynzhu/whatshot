@@ -1,24 +1,20 @@
 import SwiftUI
 import WhatShotCore
 
-/// 剧集/电影通用列表：分页懒加载 + "更新至X集"徽章
+/// 剧集 / 电影：海报卡片网格，底部懒加载
 struct TVTabView: View {
-  @Environment(AppModel.self) private var app
-
   var body: some View {
-    VideoListTabView(kind: .tvSeries)
+    VideoGridTabView(kind: .tvSeries)
   }
 }
 
 struct MovieTabView: View {
-  @Environment(AppModel.self) private var app
-
   var body: some View {
-    VideoListTabView(kind: .movie)
+    VideoGridTabView(kind: .movie)
   }
 }
 
-struct VideoListTabView: View {
+struct VideoGridTabView: View {
   let kind: ButaiKind
   @Environment(AppModel.self) private var app
   @State private var rows: [VideoRepository.VideoRow] = []
@@ -26,35 +22,57 @@ struct VideoListTabView: View {
   @State private var page = 0
   private let pageSize = 60
 
+  private let columns = [GridItem(.adaptive(minimum: 148, maximum: 200), spacing: 14)]
+
   var body: some View {
-    List {
-      ForEach(rows, id: \.id) { row in
-        ListRowView(video: row)
-          .listRowSeparator(.hidden)
-          .onAppear {
-            if row.id == rows.last?.id {
-              Task { await loadMore() }
+    Group {
+      if rows.isEmpty && loading {
+        ZStack {
+          Theme.bg.ignoresSafeArea()
+          ProgressView("加载中…").tint(Theme.accent)
+        }
+      } else if rows.isEmpty {
+        ZStack {
+          Theme.bg.ignoresSafeArea()
+          VStack(spacing: 10) {
+            Image(systemName: kind == .movie ? "film" : "tv")
+              .font(.system(size: 40))
+              .foregroundStyle(Theme.textTertiary)
+            Text("暂无数据")
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundStyle(Theme.textSecondary)
+            Text("点击底部「立即同步」拉取数据")
+              .font(.system(size: 12))
+              .foregroundStyle(Theme.textTertiary)
+          }
+        }
+      } else {
+        ScrollView {
+          LazyVGrid(columns: columns, spacing: 14) {
+            ForEach(rows, id: \.id) { row in
+              VideoCard(video: row)
+                .onAppear {
+                  if row.id == rows.last?.id {
+                    Task { await loadMore() }
+                  }
+                }
             }
           }
-      }
-      if loading && !rows.isEmpty {
-        HStack {
-          Spacer()
-          ProgressView().controlSize(.small)
-          Spacer()
+          .padding(.horizontal, 20)
+          .padding(.top, 16)
+          .padding(.bottom, 20)
+
+          if loading && !rows.isEmpty {
+            HStack(spacing: 8) {
+              ProgressView().controlSize(.small)
+              Text("加载更多…")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.bottom, 16)
+          }
         }
-      }
-      if rows.isEmpty && !loading {
-        Text("暂无数据，同步一次后显示")
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity)
-          .padding(.top, 40)
-      }
-    }
-    .listStyle(.plain)
-    .overlay(alignment: .top) {
-      if loading && rows.isEmpty {
-        ProgressView("加载中…").padding(.top, 40)
+        .background(Theme.bg)
       }
     }
     .task(id: kind) {
@@ -62,13 +80,6 @@ struct VideoListTabView: View {
       rows = []
       await loadMore()
     }
-    .refreshable { await reload() }
-  }
-
-  func reload() async {
-    page = 0
-    rows = []
-    await loadMore()
   }
 
   func loadMore() async {
@@ -81,51 +92,71 @@ struct VideoListTabView: View {
   }
 }
 
-/// 列表行：与榜单行类似但无名次
-struct ListRowView: View {
+/// 剧集/电影海报卡：海报 + 渐变托底标题/进度 + 评分与画质行
+struct VideoCard: View {
   let video: VideoRepository.VideoRow
+  @State private var hovering = false
 
   var body: some View {
-    HStack(spacing: 10) {
-      PosterImageView(url: video.posterURL)
-        .frame(width: 44, height: 60)
-      VStack(alignment: .leading, spacing: 3) {
-        Text(video.title)
-          .font(.headline)
-          .lineLimit(1)
-        HStack(spacing: 6) {
-          EpisodeBadge(status: video.episodeStatus, total: video.episodes)
-          if let year = video.years, !year.isEmpty, year != "0" {
-            Text(year).font(.caption2).foregroundStyle(.secondary)
-          }
-          if let area = video.productionArea, !area.isEmpty {
-            Text(area).font(.caption2).foregroundStyle(.secondary)
-          }
-          if let definition = video.definition, !definition.isEmpty, definition != "@" {
-            Text(definition)
-              .font(.caption2)
-              .foregroundStyle(.orange)
-              .lineLimit(1)
+    VStack(alignment: .leading, spacing: 8) {
+      PosterImage(url: video.posterURL, aspect: 2.0 / 3.0)
+        .overlay(alignment: .topTrailing) {
+          if let definition = video.definition,
+             !definition.isEmpty, definition != "@" {
+            Text(definition.components(separatedBy: ",").first ?? "")
+              .font(.system(size: 9, weight: .bold))
+              .padding(.horizontal, 6)
+              .padding(.vertical, 3)
+              .background(Capsule().fill(Color.black.opacity(0.55)))
+              .foregroundStyle(Theme.accent)
+              .padding(6)
           }
         }
-        Text("种子 \(video.seedCount) · 网盘 \(video.netdiskCount)")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+        .overlay(alignment: .bottom) {
+          LinearGradient(
+            colors: [.clear, .black.opacity(0.62)],
+            startPoint: .center, endPoint: .bottom
+          )
+          .allowsHitTesting(false)
+          .overlay(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 3) {
+              Text(video.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+              EpisodeProgress(status: video.episodeStatus, total: video.episodes)
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 7)
+          }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPoster))
+
+      HStack(spacing: 5) {
+        if let douban = cleanScore(video.doubanScore) {
+          Components.scoreBadge(source: "豆", value: douban)
+        }
+        if let imdb = cleanScore(video.imdbScore) {
+          Components.scoreBadge(source: "IMDb", value: imdb)
+        }
+        Spacer(minLength: 0)
+        HStack(spacing: 2) {
+          Image(systemName: "arrow.down.circle")
+            .font(.system(size: 9))
+          Text("\(video.seedCount)")
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+        }
+        .foregroundStyle(Theme.textTertiary)
       }
-      Spacer()
-      HStack(spacing: 8) {
-        if let douban = video.doubanScore, douban != "0", !douban.isEmpty {
-          Label(douban, systemImage: "star.fill")
-            .font(.caption)
-            .foregroundStyle(.yellow)
-        }
-        if let imdb = video.imdbScore, imdb != "0", !imdb.isEmpty {
-          Text("IMDb \(imdb)")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
+      .padding(.horizontal, 2)
     }
-    .padding(.vertical, 4)
+    .scaleEffect(hovering ? 1.025 : 1)
+    .animation(.spring(response: 0.25, dampingFraction: 0.8), value: hovering)
+    .onHover { hovering = $0 }
+  }
+
+  private func cleanScore(_ raw: String?) -> String? {
+    guard let raw = raw, !raw.isEmpty, raw != "0" else { return nil }
+    return raw
   }
 }
