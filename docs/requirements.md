@@ -1,6 +1,6 @@
 # WhatShot 一期需求与架构（已确认）
 
-> 状态：一期（方案 A 纯本地应用）已开发完成并推送到 https://github.com/zaynzhu/whatshot.git 。架构于 2026-09-11 确认；2026-09-12 UI 重设计定稿：「深夜画廊·档案版」——深底 #101013 + 单色琥珀 #D9A441 + eyebrow/粗标题杂志层级 + 榜首 hero 位，参考 re0.me 与 whatsnew 的家族审美（替代旧的深色影院海报墙主题）。本文档为需求与接口调研的定案依据。
+> 状态：一期（方案 A 纯本地应用）已开发完成并推送到 https://github.com/zaynzhu/whatshot.git 。架构于 2026-09-11 确认；2026-09-12 UI 重设计定稿：「深夜画廊·档案版」——深底 #101013 + 单色琥珀 #D9A441 + eyebrow/粗标题杂志层级 + 榜首 hero 位，参考 re0.me 与 whatsnew 的家族审美（替代旧的深色影院海报墙主题）；同日完成琥珀火焰应用图标与两处数据源韧性修复（图床占位图拦截、分类以拉取来源为准）。本文档为需求与接口调研的定案依据。
 
 ## 项目定位
 
@@ -43,6 +43,8 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 - `doub_id`：豆瓣 subject ID，可作为稳定外部身份用于后续对账
 - `IMDB_number`：tt 开头的 IMDb 编号（详情/热门接口才有）
 - 热门接口 `data.data` 双层嵌套；列表接口 `data.list` 单层——两种结构不同，解析必须分开写
+- **分类不可信（2026-09-12 实测）**：列表接口行内无 `tp`/`type` 字段，分类必须以拉取来源 `sa` 参数为准；站点「电影页」会混入真剧集（如与萨曼莎·比第四季 `tp=1` 但 `ejs=更新至35集`），且详情接口的 `tp` 与站点归类矛盾——详情回写只补字段，不得覆盖库内分类
+- **图床占位图（2026-09-12 实测）**：海报图床对失效 URL 返回 HTTP 200 的白底爆米花占位图（300x420、中心亮度 >0.85），客户端加载时必须拦截并回退应用内占位符，否则会永久缓存
 
 ### 反爬与限频
 
@@ -92,8 +94,8 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 ## 技术栈基线（与 WhatsNew 对齐的部分）
 
 - SwiftUI + Swift Concurrency + Observation，macOS 14+
-- 本地方案 A：SQLite（GRDB）做快照，URLFoundation/URLSession + 2 秒限频的 HTTP 客户端
-- 测试：`scripts/test-macos.sh`；打包：`scripts/build-macos-app.sh`（本地 ad-hoc 签名，只产 `dist/WhatShot.app`，不做 DMG 上传、不做 Release——对齐 WhatsNew 约束）
+- 本地方案 A：SQLite（系统 sqlite3 C 库）做快照，URLSession + 2 秒限频的 HTTP 客户端
+- 测试：`scripts/test-macos.sh`；打包：`scripts/build-macos-app.sh`（本地 ad-hoc 签名，只产 `dist/WhatShot.app`，不做 DMG 上传、不做 Release——对齐 WhatsNew 约束）；应用图标由 `scripts/make-appicon.sh` 渲染生成
 - 安全：接口参数、域名、代理设置只存本地，不上传；不打日志
 
 ## 二期备忘
