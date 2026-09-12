@@ -28,6 +28,11 @@ final class PosterLoader: @unchecked Sendable {
     let key = url.absoluteString.sha1Hex()
     let fileURL = diskDir.appendingPathComponent(key)
     if let data = try? Data(contentsOf: fileURL), let image = NSImage(data: data) {
+      // 磁盘缓存里的历史数据可能含图床占位图，读出后同样过滤
+      if PosterLoader.isPlaceholder(image) {
+        memoryCache.setObject(PosterLoader.placeholderSentinel, forKey: url as NSURL, cost: 1)
+        return nil
+      }
       memoryCache.setObject(image, forKey: url as NSURL, cost: image.pixelBytes)
       touch(fileURL)
       return image
@@ -39,6 +44,11 @@ final class PosterLoader: @unchecked Sendable {
           let image = NSImage(data: data) else {
       return nil
     }
+    // 图床对失效海报返回 HTTP 200 的默认占位图（白底爆米花），必须拦截，否则永久缓存
+    guard !PosterLoader.isPlaceholder(image) else {
+      memoryCache.setObject(PosterLoader.placeholderSentinel, forKey: url as NSURL, cost: 1)
+      return nil
+    }
     memoryCache.setObject(image, forKey: url as NSURL, cost: image.pixelBytes)
     let cost = image.pixelBytes
     ioQueue.async {
@@ -47,6 +57,17 @@ final class PosterLoader: @unchecked Sendable {
     }
     return image
   }
+
+  /// 图床默认占位图特征：300x420、画面整体接近纯白（中心 40x40 采样均值 > 0.85 亮度）
+  static func isPlaceholder(_ image: NSImage) -> Bool {
+    guard let rep = image.representations.first, rep.pixelsWide == 300, rep.pixelsHigh == 420 else {
+      return false
+    }
+    return image.meanLuminance(centerBox: 40) > 0.85
+  }
+
+  /// 占位图负缓存标记：命中过占位的 URL 短期内不再重复网络请求
+  static let placeholderSentinel = NSImage(size: NSSize(width: 1, height: 1))
 
   /// 磁盘 LRU：超上限按最旧访问时间淘汰
   private func enforceLimit(cost: Int) {
@@ -80,6 +101,32 @@ extension NSImage {
   var pixelBytes: Int {
     guard let rep = representations.first else { return 64 * 1024 }
     return rep.pixelsWide * rep.pixelsHigh * 4
+  }
+
+  /// 中心区域平均亮度（0~1）：用于占位图检测，只采样中心小块避免全图扫描
+  func meanLuminance(centerBox: Int) -> Double {
+    guard let rep = representations.first,
+          let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+      return 0
+    }
+    let w = rep.pixelsWide, h = rep.pixelsHigh
+    let box = min(centerBox, w, h)
+    let rect = CGRect(x: (w - box) / 2, y: (h - box) / 2, width: box, height: box)
+    guard let cropped = cgImage.cropping(to: rect) else { return 0 }
+    var pixels = [UInt8](repeating: 0, count: box * box * 4)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let ctx = CGContext(data: &pixels, width: box, height: box, bitsPerComponent: 8,
+                              bytesPerRow: box * 4, space: colorSpace,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+      return 0
+    }
+    ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: box, height: box))
+    var total = 0.0
+    let count = box * box
+    for i in 0..<count {
+      total += (Double(pixels[i*4]) + Double(pixels[i*4+1]) + Double(pixels[i*4+2])) / (3.0 * 255.0)
+    }
+    return total / Double(count)
   }
 }
 
