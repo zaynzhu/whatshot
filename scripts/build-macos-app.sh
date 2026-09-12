@@ -31,6 +31,7 @@ printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple
 plutil -insert CFBundleDisplayName -string WhatShot "$INFO_PLIST"
 plutil -insert CFBundleExecutable -string WhatShot "$INFO_PLIST"
 plutil -insert CFBundleIconFile -string AppIcon "$INFO_PLIST"
+plutil -insert CFBundleIconName -string AppIcon "$INFO_PLIST"
 plutil -insert CFBundleIdentifier -string com.zaynzhu.whatshot "$INFO_PLIST"
 plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$INFO_PLIST"
 plutil -insert CFBundleName -string WhatShot "$INFO_PLIST"
