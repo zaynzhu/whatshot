@@ -1,0 +1,107 @@
+<div align="center">
+
+<img src="docs/logo.png" alt="WhatShot Logo" width="200"/>
+
+# 🔥 WhatShot
+
+**Track the heat and episode progress of released shows and movies — at a glance**
+
+[中文](README.md) | [English](README_EN.md)
+
+[![Platform](https://img.shields.io/badge/platform-macOS%2014+-black)](https://github.com/zaynzhu/whatshot)
+[![Language](https://img.shields.io/badge/language-Swift-orange)](https://github.com/zaynzhu/whatshot)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/zaynzhu/whatshot?style=social)](https://github.com/zaynzhu/whatshot/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/zaynzhu/whatshot)](https://github.com/zaynzhu/whatshot/commits)
+[![Issues](https://img.shields.io/github/issues/zaynzhu/whatshot)](https://github.com/zaynzhu/whatshot/issues)
+
+</div>
+
+> [!TIP]
+> WhatShot is a **fully local** macOS app focused on two questions: is a show or movie **hot right now** (charts, resource counts, ratings), and **how far along is it** (up to episode X / Y total / completed). No backend, no account, no data leaving your machine.
+
+## ✨ Features
+
+- **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title
+- **Episode progress tracking** -- "Up to episode 9", "24 total", "Completed" as a dedicated info row with a visual progress line
+- **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout
+- **Douban / IMDb ratings + resource counts** -- Aggregated heat signals per card in monospaced digits
+- **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
+- **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
+- **Data-source resilience** -- Tolerant field parsing, configurable domain, placeholder-poster interception
+- **Late-night gallery design** -- Dark monochrome-amber visual language, editorial typography, pure native SwiftUI
+
+## 🚀 Quick Start
+
+```bash
+git clone https://github.com/zaynzhu/whatshot.git
+cd whatshot
+./scripts/build-macos-app.sh
+open dist/WhatShot.app
+```
+
+On first launch, click "同步" (Sync) in the top-right corner to pull the charts and recent updates.
+
+> [!NOTE]
+> Requires macOS 14+ and Xcode Command Line Tools (Swift 6 toolchain). The app is ad-hoc signed; if Gatekeeper blocks the first launch, right-click → Open.
+
+## 📦 Installation
+
+**Option 1: build script (recommended)**
+
+```bash
+./scripts/build-macos-app.sh   # produces dist/WhatShot.app (ad-hoc signed)
+```
+
+**Option 2: SwiftPM manually**
+
+```bash
+swift build --package-path macos --configuration release
+# binary at macos/.build/release/WhatShotApp
+```
+
+**Run tests**
+
+```bash
+./scripts/test-macos.sh   # Swift Testing, 13 tests
+```
+
+Dependencies: zero third-party — system `sqlite3` C library for storage, `URLSession` for networking, native SwiftUI for UI.
+
+## 💡 Usage
+
+**Browse the charts**
+
+The app opens on the "热门榜" (Charts) tab: switch between recent / weekly / monthly. On wide windows the #1 title gets a hero card (rank, title, episode progress, ratings, synopsis and a progress line); the rest flow in a gallery grid.
+
+**Follow series updates**
+
+Switch to the "剧集" (Series) tab, sorted by update time. Each card shows the title, up-to-episode status (amber = ongoing), Douban / IMDb ratings and resource counts; scroll to the bottom to lazy-load more.
+
+**Tune sync & cache**
+
+The "设置" (Settings) tab lets you change the data-source domain (the site rotates domains frequently), sync frequency, and the poster cache limit (300MB by default, lower or off).
+
+## 📚 Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [docs/requirements.md](docs/requirements.md) | Confirmed requirements, butai0 API research (field semantics, pitfalls), architecture decisions |
+| [AGENTS.md](AGENTS.md) | Project rules: layout, resource constraints, security red lines |
+
+## 🤝 Contributing
+
+Issues and PRs welcome:
+
+1. Fork the repo and create a branch (`git checkout -b feat/your-feature`)
+2. Commit messages follow `type: 中文描述` (e.g. `feat: 添加批量同步`)
+3. Run `./scripts/test-macos.sh` and make sure tests pass
+4. Open a Pull Request
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=zaynzhu/whatshot&type=Date)](https://star-history.com/#zaynzhu/whatshot&Date)
+
+## 📄 License
+
+Released under the [MIT License](LICENSE).
