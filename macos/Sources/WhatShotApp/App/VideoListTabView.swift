@@ -22,7 +22,8 @@ struct VideoGridTabView: View {
   @State private var page = 0
   private let pageSize = 60
 
-  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+  // 单元格顶对齐：集数行有无导致的卡片高度差不影响海报齐平
+  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)]
 
   var body: some View {
     VStack(spacing: 0) {

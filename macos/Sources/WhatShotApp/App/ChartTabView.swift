@@ -8,7 +8,8 @@ struct ChartTabView: View {
   @State private var rows: [(rank: Int, video: VideoRepository.VideoRow)] = []
   @State private var loading = false
 
-  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+  // 单元格顶对齐：电影卡（无集数行）比剧集卡矮时海报仍与邻居齐平
+  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)]
 
   /// 窗口够宽才给榜首 hero 位，窄窗退化为普通网格
   private let heroBreakpoint: CGFloat = 860
