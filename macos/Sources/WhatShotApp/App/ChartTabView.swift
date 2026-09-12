@@ -8,7 +8,7 @@ struct ChartTabView: View {
   @State private var rows: [(rank: Int, video: VideoRepository.VideoRow)] = []
   @State private var loading = false
 
-  private let columns = [GridItem(.adaptive(minimum: 148, maximum: 200), spacing: 14)]
+  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 14)]
 
   var body: some View {
     VStack(spacing: 0) {
@@ -173,22 +173,25 @@ struct PosterImage: View {
   @State private var image: NSImage?
 
   var body: some View {
-    ZStack {
-      Rectangle()
-        .fill(Theme.card)
-      if let image = image {
-        Image(nsImage: image)
-          .resizable()
-          .aspectRatio(contentMode: .fill)
-      } else {
-        Image(systemName: "film")
-          .font(.system(size: 22))
-          .foregroundStyle(Theme.textTertiary)
+    Rectangle()
+      .fill(Theme.card)
+      .aspectRatio(aspect, contentMode: .fit)
+      .overlay {
+        if let image = image {
+          // scaledToFill 溢出布局边界会让行高不齐，必须 clipped 截断
+          Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
+            .allowsHitTesting(false)
+        } else {
+          Image(systemName: "film")
+            .font(.system(size: 22))
+            .foregroundStyle(Theme.textTertiary)
+        }
       }
-    }
-    .aspectRatio(aspect, contentMode: .fit)
-    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPoster))
-    .task(id: url) { await load() }
+      .clipped()
+      .clipShape(RoundedRectangle(cornerRadius: Theme.radiusPoster))
+      .task(id: url) { await load() }
   }
 
   func load() async {

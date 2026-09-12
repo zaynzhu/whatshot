@@ -11,11 +11,11 @@ struct WhatShotAppMain: App {
     WindowGroup("WhatShot") {
       ContentView()
         .environment(appModel)
-        .frame(width: 720, height: 560)
+        .frame(minWidth: 620, minHeight: 480)
         .task {
           await appModel.bootstrapIfNeeded()
         }
     }
-    .defaultSize(width: 720, height: 560)
+    .defaultSize(width: 900, height: 640)
   }
 }

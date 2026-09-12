@@ -22,7 +22,7 @@ struct VideoGridTabView: View {
   @State private var page = 0
   private let pageSize = 60
 
-  private let columns = [GridItem(.adaptive(minimum: 148, maximum: 200), spacing: 14)]
+  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 14)]
 
   var body: some View {
     Group {
