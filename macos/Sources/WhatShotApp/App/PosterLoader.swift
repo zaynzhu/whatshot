@@ -69,6 +69,17 @@ final class PosterLoader: @unchecked Sendable {
   /// 占位图负缓存标记：命中过占位的 URL 短期内不再重复网络请求
   static let placeholderSentinel = NSImage(size: NSSize(width: 1, height: 1))
 
+  /// 磁盘占用（字节）：设置页展示用，扫目录文件大小
+  func diskUsageBytes() -> Int64 {
+    let files = (try? FileManager.default.contentsOfDirectory(
+      at: diskDir, includingPropertiesForKeys: [.fileSizeKey]
+    )) ?? []
+    return files.reduce(Int64(0)) { total, url in
+      let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+      return total + Int64(size)
+    }
+  }
+
   /// 磁盘 LRU：超上限按最旧访问时间淘汰
   private func enforceLimit(cost: Int) {
     guard limitBytes > 0 else { return }

@@ -6,6 +6,9 @@ struct SettingsTabView: View {
   @Environment(AppModel.self) private var app
   @State private var draft: ButaiSettings = .default
   @State private var saved = false
+  // 磁盘占用：进页算一次，字节
+  @State private var posterCacheBytes: Int64 = 0
+  @State private var databaseBytes: Int64 = 0
 
   var body: some View {
     ScrollView {
@@ -61,16 +64,19 @@ struct SettingsTabView: View {
         }
 
         settingCard(title: "缓存", icon: "internaldrive") {
-          pickerRow(label: "海报磁盘缓存上限") {
-            Picker("", selection: $draft.posterCacheLimitMB) {
-              Text("关闭").tag(0)
-              ForEach([100, 200, 300, 500], id: \.self) { mb in
-                Text("\(mb) MB").tag(mb)
+          VStack(alignment: .leading, spacing: 10) {
+            pickerRow(label: "海报磁盘缓存上限") {
+              Picker("", selection: $draft.posterCacheLimitMB) {
+                Text("关闭").tag(0)
+                ForEach([100, 200, 300, 500], id: \.self) { mb in
+                  Text("\(mb) MB").tag(mb)
+                }
               }
+              .labelsHidden()
+              .pickerStyle(.menu)
+              .tint(Theme.textPrimary)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .tint(Theme.textPrimary)
+            diskUsageRow
           }
         }
 
@@ -96,7 +102,67 @@ struct SettingsTabView: View {
       .padding(20)
     }
     .background(Theme.bg)
-    .onAppear { draft = app.settings }
+    .onAppear {
+      draft = app.settings
+      refreshDiskUsage()
+    }
+  }
+
+  /// 磁盘占用行：海报缓存 + 数据库分项，合计附 1px 细进度线（缓存/上限比值，关闭上限时不画）
+  /// 上限调低后立即反映：用 draft.posterCacheLimitMB 计算
+  private var diskUsageRow: some View {
+    let limitBytes = Int64(draft.posterCacheLimitMB) * 1024 * 1024
+    let ratio = limitBytes > 0 ? min(1, Double(posterCacheBytes) / Double(limitBytes)) : nil
+
+    return VStack(alignment: .leading, spacing: 7) {
+      HStack {
+        Text("当前占用")
+          .font(.system(size: 12.5))
+          .foregroundStyle(Theme.textSecondary)
+        Spacer()
+        Text("海报 \(Self.formatted(posterCacheBytes)) · 数据库 \(Self.formatted(databaseBytes))")
+          .font(.system(size: 12, weight: .semibold).monospacedDigit())
+          .foregroundStyle(Theme.textPrimary)
+      }
+      HStack(spacing: 8) {
+        if let ratio {
+          GeometryReader { geo in
+            ZStack(alignment: .leading) {
+              Rectangle().fill(Theme.hairline)
+              Rectangle()
+                .fill(ratio >= 0.9 ? Theme.accent : Theme.textTertiary)
+                .frame(width: max(2, geo.size.width * ratio))
+            }
+          }
+          .frame(height: 1.5)
+          Text("上限 \(draft.posterCacheLimitMB) MB · \(Int(ratio * 100))%")
+            .font(.system(size: 10.5).monospacedDigit())
+            .foregroundStyle(ratio >= 0.9 ? Theme.accent : Theme.textTertiary)
+        } else {
+          Text("未设上限，缓存随访问自动增长")
+            .font(.system(size: 10.5))
+            .foregroundStyle(Theme.textTertiary)
+        }
+      }
+    }
+  }
+
+  private func refreshDiskUsage() {
+    posterCacheBytes = PosterLoader.shared.diskUsageBytes()
+    databaseBytes = Self.fileSize(at: SharedRuntime.databasePath())
+      + Self.fileSize(at: SharedRuntime.databasePath() + "-wal")
+      + Self.fileSize(at: SharedRuntime.databasePath() + "-shm")
+  }
+
+  private static func fileSize(at path: String) -> Int64 {
+    let url = URL(fileURLWithPath: path)
+    return Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+  }
+
+  private static func formatted(_ bytes: Int64) -> String {
+    bytes >= 1024 * 1024
+      ? String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+      : "\(max(0, Int(bytes) / 1024)) KB"
   }
 
   /// 设置分组卡：浮层底 + hairline 描边
