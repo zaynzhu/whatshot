@@ -12,7 +12,9 @@ public struct VideoRepository: Sendable {
   // MARK: - 写入
 
   /// upsert 条目并记录观察。返回是否发生了用户关心的变化（ejs/seed/评分）
-  public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date) async throws -> Bool {
+  /// preserveKind=true 时保留库内已有分类（详情接口的 tp 与站点归类矛盾，不得覆盖列表来源的分类）
+  public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date,
+                     preserveKind: Bool = false) async throws -> Bool {
     let nowSeconds = Int(now.timeIntervalSince1970)
     let videoID = video.id
     let scopeRaw = chartScope?.rawValue
@@ -37,7 +39,8 @@ public struct VideoRepository: Sendable {
 
       changed = previous && (prevEjs != ejs || prevSeed != seedCount || prevWp != netdiskCount || prevDouban != douban || prevImdb != imdb)
 
-      // 2. upsert 条目
+      // 2. upsert 条目；preserveKind 时分类保留库内值（详情回写场景）
+      let kindAssign = preserveKind ? "kind=videos.kind," : "kind=excluded.kind,"
       let upsert = """
       INSERT INTO videos (id, kind, title, otitle, alias, douban_id, imdb_number, episode_status, episodes,
         douban_score, imdb_score, poster_url, class_names, production_area, years, release_info,
@@ -45,7 +48,7 @@ public struct VideoRepository: Sendable {
         first_seen_at, last_synced_at, last_detail_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
-      kind=excluded.kind, title=excluded.title, otitle=excluded.otitle, alias=excluded.alias,
+      \(kindAssign) title=excluded.title, otitle=excluded.otitle, alias=excluded.alias,
       douban_id=excluded.douban_id, imdb_number=excluded.imdb_number,
       episode_status=COALESCE(NULLIF(excluded.episode_status, ''), videos.episode_status),
       episodes=CASE WHEN excluded.episodes != '0' AND excluded.episodes IS NOT NULL AND excluded.episodes != '' THEN excluded.episodes ELSE videos.episodes END,

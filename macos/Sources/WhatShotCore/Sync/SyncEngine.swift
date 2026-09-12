@@ -71,7 +71,8 @@ public struct SyncEngine: Sendable {
         guard doubanID > 0 else { continue } // 无豆瓣 ID 的条目无法拉详情
         do {
           let detail = try await client.fetchDetail(id: doubanID)
-          _ = try? await repo.upsert(detail, chartScope: nil, chartRank: nil, now: Date())
+          // 详情接口的 tp 与站点归类矛盾（会把剧集标成电影），只补全字段不覆盖已有分类
+          _ = try? await repo.upsert(detail, chartScope: nil, chartRank: nil, now: Date(), preserveKind: true)
           try? await repo.markDetailSynced(videoID: detail.id, at: Date())
           detailCount += 1
         } catch {
