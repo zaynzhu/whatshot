@@ -32,8 +32,10 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 | `getVideoList?sc=1/2` | 首页电影/电视剧精选 | 同热门榜 |
 | `getVideoList?sc=3/4/5` | 近日/本周/本月热门榜，各 35 条 | `title`、`ejs`、`episodes`、`seed_num`、`wp_num`、`doub_score`、`doub_id`、`IMDB_number`、`IMDB_score`、`definition`、`class`、`production_area`、`years`、`release`、`abstract`、`director`、`performer`、`seed_updated_at`、`updated_at` |
 | `getVideoMovieList?sa=1(电影)/2(剧集)&page=N` | 全库列表，total 25124 条，每页 25 条；支持类型/地区/年份/画质/状态(更新中/已完结)/排序(更新时间等)筛选 | 列表版字段：`doub_id`、`id`(内部 ID)、`doub_id`(豆瓣 ID)、`aurl`、`epic`(海报)、`title`、`ejs`(更新至X集/全集/空)、`niandai`(年代)、`ecc`(又名/类型/地区聚合)、`alias`、`class`、`production_area`、`seed_num`、`wp_num`、`imdbf` |
-| `getVideoDetail?id=X` | 详情 49 字段 | 列表字段全量 + `otitle`(原题)、`episodes`(总集数)、`language`、`edit`(编剧)、`performer`、`abstract`、`long_time`、`is_show_seed`、`need_vip` |
-| `getVideoTypeList` | 类型/地区/画质/标签字典 | 筛选器元数据 |
+| `getVideoDetail?id=X` | 详情 49 字段（`id` 传豆瓣 ID；`release` 首播/上映日**仅老条目有值**） | 列表字段全量 + `otitle`(原题)、`episodes`(总集数)、`language`、`edit`(编剧)、`performer`、`abstract`、`long_time`、`is_show_seed`、`need_vip` |
+| `getVideoTypeList` | 类型/地区/年代/画质/标签字典 | 筛选器元数据 |
+
+> 筛选/排序参数（`sc/sd/se/sf/sh/sg/status` 等）、字典五维度全量取值、`release` 覆盖率抽样与播出日期可得性结论，均已实测并维护在 [butai0-api.md](butai0-api.md)。
 
 ### 关键字段语义（从页面渲染反推，需保守解析）
 
