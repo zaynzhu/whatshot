@@ -26,13 +26,14 @@ struct ButaiParserTests {
   }
 
   /// 列表单层结构（getVideoMovieList → data.list），字段名不同（epic/niandai/eqxd）
+  /// 分类以拉取来源 kind 为准：列表行无 tp 字段，站点电影页会混入剧集
   @Test func parseMovieListFlat() throws {
     let json = """
     {"success":true,"code":200,"data":{"page":1,"limit":25,"total":25124,"list":[
       {"doub_id":38462800,"id":93356,"aurl":"/mv/38462800","epic":"https://img.example/b.png","title":"直到T恤干透","ejs":"更新至9集","eqxd":"","niandai":"2026","imdbf":"0","alias":"T恤渐干","class":"剧情,爱情,悬疑","long_time":"","production_area":"日本","seed_num":34,"wp_num":4}
     ]}}
     """
-    let videos = try ButaiParser.parseMovieList(Data(json.utf8))
+    let videos = try ButaiParser.parseMovieList(Data(json.utf8), kind: .tvSeries)
     #expect(videos.count == 1)
     let video = videos[0]
     #expect(video.id == 93356)
@@ -46,6 +47,19 @@ struct ButaiParserTests {
     #expect(video.kind == .tvSeries)
   }
 
+  /// 同一列表行按电影来源解析时 kind 应为电影（站点电影页混入的剧集也按来源归类）
+  @Test func parseMovieListKindFromSource() throws {
+    let json = """
+    {"success":true,"code":200,"data":{"list":[
+      {"doub_id":100,"id":1,"title":"与萨曼莎·比正面交锋","ejs":"更新至35集"}
+    ]}}
+    """
+    let movies = try ButaiParser.parseMovieList(Data(json.utf8), kind: .movie)
+    #expect(movies[0].kind == .movie)
+    let series = try ButaiParser.parseMovieList(Data(json.utf8), kind: .tvSeries)
+    #expect(series[0].kind == .tvSeries)
+  }
+
   /// "全集" 应解析出总集数作为当前集
   @Test func fullSeriesEpisode() throws {
     let json = """
@@ -53,7 +67,7 @@ struct ButaiParserTests {
       {"id":1,"doub_id":100,"title":"早春晴朗","ejs":"全集","episodes":"24","tp":2,"seed_num":128}
     ]}}
     """
-    let videos = try ButaiParser.parseMovieList(Data(json.utf8))
+    let videos = try ButaiParser.parseMovieList(Data(json.utf8), kind: .tvSeries)
     #expect(videos[0].currentEpisode == 24)
     #expect(videos[0].episodeCount == 24)
   }
@@ -64,7 +78,7 @@ struct ButaiParserTests {
     {"success":false,"code":10101,"message":"接口鉴权失败"}
     """
     #expect(throws: ButaiParseError.self) {
-      _ = try ButaiParser.parseMovieList(Data(json.utf8))
+      _ = try ButaiParser.parseMovieList(Data(json.utf8), kind: .tvSeries)
     }
   }
 
@@ -73,7 +87,7 @@ struct ButaiParserTests {
     let json = """
     {"success":true,"code":200,"data":{"list":[{}]}}
     """
-    let videos = try ButaiParser.parseMovieList(Data(json.utf8))
+    let videos = try ButaiParser.parseMovieList(Data(json.utf8), kind: .tvSeries)
     #expect(videos.count == 1)
     #expect(videos[0].title == "")
   }

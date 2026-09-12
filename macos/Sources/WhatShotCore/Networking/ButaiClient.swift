@@ -62,13 +62,14 @@ public struct ButaiClient: Sendable {
   }
 
   /// 电影/剧集列表按更新时间排序翻页；mediaKind 1=电影 2=剧集
+  /// 分类以请求参数 sa 为准（列表行无 tp 字段，站点电影页会混入剧集）
   public func fetchMovieList(mediaKind: ButaiKind, page: Int) async throws -> [ButaiVideo] {
     let url = try apiURL(path: "getVideoMovieList", query: [
       "sa": mediaKind == .movie ? "1" : "2",
       "sg": "1",
       "page": String(page)
     ])
-    return try ButaiParser.parseMovieList(try await get(url))
+    return try ButaiParser.parseMovieList(try await get(url), kind: mediaKind)
   }
 
   /// 详情

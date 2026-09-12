@@ -161,13 +161,14 @@ public enum ButaiParser {
   }
 
   /// 列表 getVideoMovieList → data.list 数组（单层）
-  public static func parseMovieList(_ data: Data) throws -> [ButaiVideo] {
+  /// 列表行不带 tp 字段，分类以拉取来源 sa 参数为准（站点「电影页」也会混入剧集，行内字段不可信）
+  public static func parseMovieList(_ data: Data, kind: ButaiKind) throws -> [ButaiVideo] {
     let payload = try unwrap(data)
     guard let dict = payload as? [String: Any],
           let rows = dict["list"] as? [[String: Any]] else {
       throw ButaiParseError(message: "getVideoMovieList data.list 结构缺失")
     }
-    return rows.map(parseListVideo)
+    return rows.map { parseListVideo($0, kind: kind) }
   }
 
   /// 详情 getVideoDetail → data 对象
@@ -179,19 +180,19 @@ public enum ButaiParser {
     return parseVideo(row)
   }
 
-  /// 热门接口的完整字段行
+  /// 热门接口的完整字段行（tp 有值且可信）
   static func parseVideo(_ row: [String: Any]) -> ButaiVideo {
-    parseListVideo(row)
+    let kindRaw = (row["tp"] as? Int) ?? (row["type"] as? Int) ?? 2
+    return parseListVideo(row, kind: kindRaw == 1 ? .movie : .tvSeries)
   }
 
-  /// 列表接口字段行（热门接口是其超集，解析同一套容错逻辑）
-  static func parseListVideo(_ row: [String: Any]) -> ButaiVideo {
+  /// 列表接口字段行；kind 由调用方按拉取来源传入，行内 tp/type 缺失或与来源矛盾时以来源为准
+  static func parseListVideo(_ row: [String: Any], kind: ButaiKind) -> ButaiVideo {
     let id = (row["id"] as? Int) ?? Int(row["id"] as? String ?? "") ?? 0
     // 热门接口用 idcode，列表接口用 doub_id 作豆瓣 ID
     let doubanId = (row["doub_id"] as? Int)
       ?? (row["doub_id"] as? String).flatMap(Int.init)
       ?? Int(row["idcode"] as? String ?? "") ?? nil
-    let kindRaw = (row["tp"] as? Int) ?? (row["type"] as? Int) ?? 2
     return ButaiVideo(
       id: id,
       doubanId: doubanId,
@@ -216,7 +217,7 @@ public enum ButaiParser {
       performer: row["performer"] as? String,
       abstract: row["abstract"] as? String,
       release: row["release"] as? String,
-      kind: kindRaw == 1 ? .movie : .tvSeries
+      kind: kind
     )
   }
 }
