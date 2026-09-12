@@ -92,6 +92,7 @@ struct TextTab: View {
 }
 
 /// 描边按钮（次操作）：透明底 + hairline 描边
+/// fixedSize 防布局压缩：窄窗/台前调度下文字与图标保持完整，宁可溢出不截断
 struct OutlineButton: View {
   let title: String
   var icon: String? = nil
@@ -107,6 +108,7 @@ struct OutlineButton: View {
         Text(title)
           .font(.system(size: 12, weight: .medium))
       }
+      .fixedSize()
       .padding(.horizontal, 11)
       .padding(.vertical, 5.5)
       .overlay(

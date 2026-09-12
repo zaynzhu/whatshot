@@ -58,6 +58,7 @@ struct ContentView: View {
       Spacer()
 
       // 同步状态区：状态文字 + 同步按钮
+      // fixedSize 防挤压：窄窗（台前调度缩放）下压碎的是 tab 文字而非按钮本体
       HStack(spacing: 12) {
         if app.syncing {
           ProgressView()
@@ -83,6 +84,7 @@ struct ContentView: View {
           }
         }
       }
+      .fixedSize()
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 10)
