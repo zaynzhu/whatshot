@@ -1,7 +1,7 @@
 import SwiftUI
 import WhatShotCore
 
-/// 设置页：深色卡片分组，无系统 Form 默认样式
+/// 设置页：浮层卡片分组 + hairline 描边控件，与画廊主题同套 token
 struct SettingsTabView: View {
   @Environment(AppModel.self) private var app
   @State private var draft: ButaiSettings = .default
@@ -10,6 +10,9 @@ struct SettingsTabView: View {
   var body: some View {
     ScrollView {
       VStack(spacing: 14) {
+        PageHeader(eyebrow: "PREFERENCES", title: "设置", subtitle: "数据与设置仅存本机，不上传")
+          .padding(.bottom, 2)
+
         settingCard(title: "数据源", icon: "globe") {
           VStack(alignment: .leading, spacing: 8) {
             Text("站点地址")
@@ -17,14 +20,14 @@ struct SettingsTabView: View {
               .foregroundStyle(Theme.textSecondary)
             TextField("https://www.butai0.club", text: $draft.baseURL)
               .textFieldStyle(.plain)
-              .font(.system(size: 13, design: .rounded))
+              .font(.system(size: 13).monospacedDigit())
               .padding(.horizontal, 10)
               .padding(.vertical, 8)
               .background(
-                RoundedRectangle(cornerRadius: Theme.radiusChip)
+                RoundedRectangle(cornerRadius: Theme.radiusControl)
                   .fill(Theme.bg)
                   .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusChip)
+                    RoundedRectangle(cornerRadius: Theme.radiusControl)
                       .stroke(Theme.hairline, lineWidth: 1)
                   )
               )
@@ -76,25 +79,17 @@ struct SettingsTabView: View {
           if saved {
             Label("已保存", systemImage: "checkmark.circle.fill")
               .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(Theme.douban)
+              .foregroundStyle(.green.opacity(0.85))
               .transition(.opacity)
           }
-          Button {
+          AccentButton(title: "保存设置") {
             Task {
               await app.updateSettings(draft)
               withAnimation(.easeOut(duration: 0.2)) { saved = true }
               try? await Task.sleep(nanoseconds: 1_500_000_000)
               withAnimation(.easeIn(duration: 0.3)) { saved = false }
             }
-          } label: {
-            Text("保存设置")
-              .font(.system(size: 13, weight: .semibold))
-              .padding(.horizontal, 22)
-              .padding(.vertical, 8)
-              .background(Capsule().fill(Theme.accent))
-              .foregroundStyle(.white)
           }
-          .buttonStyle(.plain)
         }
         .padding(.top, 4)
       }
@@ -104,7 +99,7 @@ struct SettingsTabView: View {
     .onAppear { draft = app.settings }
   }
 
-  /// 设置分组卡
+  /// 设置分组卡：浮层底 + hairline 描边
   private func settingCard<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       Label(title, systemImage: icon)
@@ -116,7 +111,11 @@ struct SettingsTabView: View {
     .padding(16)
     .background(
       RoundedRectangle(cornerRadius: Theme.radiusCard)
-        .fill(Theme.card)
+        .fill(Theme.elevated)
+        .overlay(
+          RoundedRectangle(cornerRadius: Theme.radiusCard)
+            .stroke(Theme.hairline, lineWidth: 1)
+        )
     )
   }
 
@@ -130,6 +129,7 @@ struct SettingsTabView: View {
     }
   }
 
+  /// 步进器：方角描边按钮 + 等宽计数
   private func stepperBadge(value: Binding<Int>, suffix: String) -> some View {
     HStack(spacing: 10) {
       Button {
@@ -137,14 +137,17 @@ struct SettingsTabView: View {
       } label: {
         Image(systemName: "minus")
           .font(.system(size: 10, weight: .bold))
-          .frame(width: 20, height: 20)
-          .background(Circle().fill(Theme.bg))
+          .frame(width: 22, height: 22)
+          .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusControl)
+              .stroke(Theme.hairline, lineWidth: 1)
+          )
           .foregroundStyle(Theme.textSecondary)
       }
       .buttonStyle(.plain)
 
       Text("\(value.wrappedValue) \(suffix)")
-        .font(.system(size: 12, weight: .semibold, design: .rounded))
+        .font(.system(size: 12, weight: .semibold).monospacedDigit())
         .foregroundStyle(Theme.textPrimary)
         .frame(minWidth: 38)
 
@@ -153,8 +156,11 @@ struct SettingsTabView: View {
       } label: {
         Image(systemName: "plus")
           .font(.system(size: 10, weight: .bold))
-          .frame(width: 20, height: 20)
-          .background(Circle().fill(Theme.bg))
+          .frame(width: 22, height: 22)
+          .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusControl)
+              .stroke(Theme.hairline, lineWidth: 1)
+          )
           .foregroundStyle(Theme.textSecondary)
       }
       .buttonStyle(.plain)
