@@ -218,6 +218,18 @@ struct EpisodeStatus: Equatable {
   }
 }
 
+/// 集数独立行：更新中=琥珀（在播信号），其余=灰；无集数状态时不渲染
+struct EpisodeStatusText: View {
+  let episode: EpisodeStatus
+  var size: CGFloat = 12
+
+  var body: some View {
+    Text(episode.text)
+      .font(.system(size: size, weight: .semibold).monospacedDigit())
+      .foregroundStyle(episode.isOngoing ? Theme.accent : Theme.textSecondary)
+  }
+}
+
 // MARK: - 海报与卡片
 
 /// 海报图：NSCache + 磁盘缓存；细描边，hover 时描边亮起
@@ -258,21 +270,18 @@ struct PosterImage: View {
   }
 }
 
-/// 海报下方 meta 行：更至 24/36 · 豆 7.8 · IM 7.4 · 214（· 4K）
-/// 单文本截断；"更新中"是唯一琥珀段
+/// 海报下方 meta 行：豆 7.8 · IM 7.4 · 214（· 4K）——纯评分与资源数，集数由 EpisodeStatusText 独立承担
+/// 单文本截断
 struct VideoMetaLine: View {
   let video: VideoRepository.VideoRow
   var showDefinition = false
 
-  private var segments: [(text: String, ongoing: Bool)] {
-    var list: [(String, Bool)] = []
-    if let ep = EpisodeStatus.parse(status: video.episodeStatus, total: video.episodes) {
-      list.append((ep.text, ep.isOngoing))
-    }
-    if let douban = cleanScore(video.doubanScore) { list.append(("豆 \(douban)", false)) }
-    if let imdb = cleanScore(video.imdbScore) { list.append(("IM \(imdb)", false)) }
-    if video.seedCount > 0 { list.append(("\(video.seedCount)", false)) }
-    if showDefinition, let definition = definitionText { list.append((definition, false)) }
+  private var segments: [String] {
+    var list: [String] = []
+    if let douban = cleanScore(video.doubanScore) { list.append("豆 \(douban)") }
+    if let imdb = cleanScore(video.imdbScore) { list.append("IM \(imdb)") }
+    if video.seedCount > 0 { list.append("\(video.seedCount)") }
+    if showDefinition, let definition = definitionText { list.append(definition) }
     return list
   }
 
@@ -292,8 +301,7 @@ struct VideoMetaLine: View {
       if index > 0 {
         line = line + Text("  ·  ").foregroundColor(Theme.textTertiary)
       }
-      line = line + Text(segment.text)
-        .foregroundColor(segment.ongoing ? Theme.accent : Theme.textSecondary)
+      line = line + Text(segment).foregroundColor(Theme.textSecondary)
     }
     return line
       .font(.system(size: 10.5).monospacedDigit())
@@ -319,6 +327,10 @@ struct GalleryCard: View {
         .font(.system(size: 12.5, weight: .semibold))
         .foregroundStyle(Theme.textPrimary)
         .lineLimit(1)
+      // 集数是仅次于片名的信息层级：独立一行；电影/无集数时省略
+      if let episode = EpisodeStatus.parse(status: video.episodeStatus, total: video.episodes) {
+        EpisodeStatusText(episode: episode)
+      }
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

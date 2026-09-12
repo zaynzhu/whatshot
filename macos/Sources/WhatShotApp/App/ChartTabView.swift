@@ -133,7 +133,12 @@ struct HeroCard: View {
             .lineLimit(1)
         }
 
-        HeroMetaLine(video: video, episode: episode)
+        // 播出进度是 hero 的第二信息层级：紧跟标题区、15pt 琥珀
+        if let episode {
+          EpisodeStatusText(episode: episode, size: 15)
+        }
+
+        HeroMetaLine(video: video)
 
         if let archiveLine {
           Text(archiveLine.decodingHTMLEntities)
@@ -175,32 +180,27 @@ struct HeroCard: View {
   }
 }
 
-/// hero meta 行：进度 + 双评分 + 资源数，等宽数字；"更新中"琥珀
+/// hero meta 行：双评分 + 资源数，等宽数字；集数由 EpisodeStatusText 独立承担
 private struct HeroMetaLine: View {
   let video: VideoRepository.VideoRow
-  let episode: EpisodeStatus?
 
   var body: some View {
     var line = Text("")
-    var segments: [(text: String, ongoing: Bool)] = []
-    if let episode {
-      segments.append((episode.text, episode.isOngoing))
-    }
+    var segments: [String] = []
     if let douban = cleanedScoreText(video.doubanScore) {
-      segments.append(("豆 \(douban)", false))
+      segments.append("豆 \(douban)")
     }
     if let imdb = cleanedScoreText(video.imdbScore) {
-      segments.append(("IM \(imdb)", false))
+      segments.append("IM \(imdb)")
     }
     if video.seedCount > 0 {
-      segments.append(("\(video.seedCount) 资源", false))
+      segments.append("\(video.seedCount) 资源")
     }
     for (index, segment) in segments.enumerated() {
       if index > 0 {
         line = line + Text("  ·  ").foregroundColor(Theme.textTertiary)
       }
-      line = line + Text(segment.text)
-        .foregroundColor(segment.ongoing ? Theme.accent : Theme.textSecondary)
+      line = line + Text(segment).foregroundColor(Theme.textSecondary)
     }
     return line
       .font(.system(size: 12.5))
