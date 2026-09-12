@@ -18,13 +18,19 @@ trap cleanup EXIT
 swift build --package-path "$MACOS_PACKAGE_DIR" --configuration release
 RELEASE_BIN_DIR=$(swift build --package-path "$MACOS_PACKAGE_DIR" --configuration release --show-bin-path)
 
+APP_ICON="$REPOSITORY_DIR/scripts/appicon/AppIcon.icns"
+
 mkdir -p "$STAGING_APP/Contents/MacOS" "$STAGING_APP/Contents/Resources"
 cp "$RELEASE_BIN_DIR/WhatShotApp" "$STAGING_APP/Contents/MacOS/WhatShot"
+if [[ -f "$APP_ICON" ]]; then
+  cp "$APP_ICON" "$STAGING_APP/Contents/Resources/AppIcon.icns"
+fi
 
 INFO_PLIST="$STAGING_APP/Contents/Info.plist"
 printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict/>\n</plist>\n' > "$INFO_PLIST"
 plutil -insert CFBundleDisplayName -string WhatShot "$INFO_PLIST"
 plutil -insert CFBundleExecutable -string WhatShot "$INFO_PLIST"
+plutil -insert CFBundleIconFile -string AppIcon "$INFO_PLIST"
 plutil -insert CFBundleIdentifier -string com.zaynzhu.whatshot "$INFO_PLIST"
 plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$INFO_PLIST"
 plutil -insert CFBundleName -string WhatShot "$INFO_PLIST"
