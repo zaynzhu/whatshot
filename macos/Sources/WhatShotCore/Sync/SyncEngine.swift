@@ -7,19 +7,60 @@ public struct SyncSummary: Sendable, Equatable {
   public var detailCount: Int
   public var durationSeconds: Double
   public var error: String?
+
+  public init(fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double, error: String? = nil) {
+    self.fetchedCount = fetchedCount
+    self.changedCount = changedCount
+    self.detailCount = detailCount
+    self.durationSeconds = durationSeconds
+    self.error = error
+  }
 }
 
 /// 同步引擎：热门榜 3 个 + 电影/剧集最近更新页；变化条目补拉详情。
 /// 单次运行约 10~20 个请求，2 秒限频下一分钟内完成。
+/// 域名故障降级：同一域名连续 2 次请求失败（4 秒以上持续不可用）即判定故障，
+/// 通过 selector 换域名后从失败步骤继续同步；切不动才计入失败。
 public struct SyncEngine: Sendable {
   let client: ButaiClient
+  let selector: DomainSelector?
   let repo: VideoRepository
   let settings: ButaiSettings
 
-  public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings) {
+  public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
+              selector: DomainSelector? = nil) {
     self.client = client
+    self.selector = selector
     self.repo = repo
     self.settings = settings
+  }
+
+  /// 带域名降级的请求执行器：连续 2 次失败换域名重试一次
+  private func resilientFetch<T>(_ operation: String, _ fetch: (ButaiClient) async throws -> T) async throws -> T {
+    do {
+      return try await fetch(client)
+    } catch {
+      // 第一次失败：原域名立即重试一次（容忍瞬时抖动）
+      if let retryResult = try? await fetch(client) {
+        return retryResult
+      }
+      // 连续 2 次失败：判定域名故障，尝试降级换域名
+      guard let selector else {
+        throw error
+      }
+      let candidates = await fallbackCandidates()
+      guard let probe = await selector.demoteAndPick(candidates: candidates),
+            probe.baseURL != client.baseURL else {
+        throw error
+      }
+      let newClient = ButaiClient(baseURL: probe.baseURL)
+      return try await fetch(newClient)
+    }
+  }
+
+  /// 降级候选 = 官方池 + 当前设置的自定义地址
+  private func fallbackCandidates() async -> [String] {
+    DomainPool.candidates(customBaseURL: settings.baseURL)
   }
 
   /// 执行一次完整同步。每一步独立容错：单个榜/页失败不影响其他，最后汇总为 warning 或 failed
@@ -34,7 +75,9 @@ public struct SyncEngine: Sendable {
     // 1. 热门榜三个 scope
     for scope in ButaiChartScope.allCases {
       do {
-        let videos = try await client.fetchChart(scope)
+        let videos = try await resilientFetch(scope.label) { client in
+          try await client.fetchChart(scope)
+        }
         fetched += videos.count
         for (index, video) in videos.enumerated() {
           let videoChanged = (try? await repo.upsert(video, chartScope: scope, chartRank: index + 1, now: Date())) ?? false
@@ -50,7 +93,9 @@ public struct SyncEngine: Sendable {
       let pages = kind == .movie ? settings.movieListPages : settings.tvListPages
       for page in 1...max(1, pages) {
         do {
-          let videos = try await client.fetchMovieList(mediaKind: kind, page: page)
+          let videos = try await resilientFetch("\(kind == .movie ? "电影" : "剧集")第\(page)页") { client in
+            try await client.fetchMovieList(mediaKind: kind, page: page)
+          }
           fetched += videos.count
           for video in videos {
             let videoChanged = (try? await repo.upsert(video, chartScope: nil, chartRank: nil, now: Date())) ?? false
@@ -70,7 +115,9 @@ public struct SyncEngine: Sendable {
       for doubanID in candidates {
         guard doubanID > 0 else { continue } // 无豆瓣 ID 的条目无法拉详情
         do {
-          let detail = try await client.fetchDetail(id: doubanID)
+          let detail = try await resilientFetch("详情\(doubanID)") { client in
+            try await client.fetchDetail(id: doubanID)
+          }
           // 详情接口的 tp 与站点归类矛盾（会把剧集标成电影），只补全字段不覆盖已有分类
           _ = try? await repo.upsert(detail, chartScope: nil, chartRank: nil, now: Date(), preserveKind: true)
           try? await repo.markDetailSynced(videoID: detail.id, at: Date())

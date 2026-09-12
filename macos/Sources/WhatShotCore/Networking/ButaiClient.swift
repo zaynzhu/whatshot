@@ -1,17 +1,23 @@
 import Foundation
 
 /// butai0 HTTP 客户端：2 秒限频 + 可配置域名 + 容错
+/// baseURL 是「本次同步实际使用的域名」：由 SyncEngine 探活择优后注入（settings.baseURL
+/// 作为最高优先候选），不再直接绑定 settings
 public struct ButaiClient: Sendable {
   /// 写死在前端 JS 的固定公开参数（缺失时报"接口鉴权失败"）
   static let appID = "83768d9ad4"
   static let identity = "23734adac0301bccdcb107c4aa21f96c"
 
-  private let settings: ButaiSettings
+  /// 本次同步实际使用的域名（规范化后），供降级逻辑比对
+  public let baseURL: String
   private let limiter: RateLimiter
   private let session: URLSession
 
-  public init(settings: ButaiSettings, limiter: RateLimiter = RateLimiter(), session: URLSession = .shared) {
-    self.settings = settings
+  public init(baseURL: String, limiter: RateLimiter = RateLimiter(), session: URLSession = .shared) {
+    guard let normalized = DomainPool.normalized(baseURL) else {
+      preconditionFailure("ButaiClient 需要有效域名")
+    }
+    self.baseURL = normalized
     self.limiter = limiter
     self.session = session
   }
@@ -20,22 +26,17 @@ public struct ButaiClient: Sendable {
     let message: String
   }
 
-  /// 构造 API URL。settings.baseURL 允许带不带协议与末尾斜杠
+  /// 构造 API URL。baseURL 已在 init 时规范化，此处直接拼接
   func apiURL(path: String, query: [String: String]) throws -> URL {
-    var base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !base.hasPrefix("http://") && !base.hasPrefix("https://") {
-      base = "https://" + base
-    }
-    while base.hasSuffix("/") { base.removeLast() }
-    guard var components = URLComponents(string: base + "/prod/api/v1/" + path) else {
-      throw ClientError(message: "站点地址无效：\(base)")
+    guard var components = URLComponents(string: baseURL + "/prod/api/v1/" + path) else {
+      throw ClientError(message: "站点地址无效：\(baseURL)")
     }
     var items = query.map { URLQueryItem(name: $0.key, value: $0.value) }
     items.append(URLQueryItem(name: "app_id", value: Self.appID))
     items.append(URLQueryItem(name: "identity", value: Self.identity))
     components.queryItems = items
     guard let url = components.url else {
-      throw ClientError(message: "URL 构造失败：\(base)")
+      throw ClientError(message: "URL 构造失败：\(baseURL)")
     }
     return url
   }

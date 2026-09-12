@@ -17,6 +17,10 @@ public final class AppModel {
   public private(set) var lastError: String?
 
   private var syncTask: Task<Void, Never>?
+  /// 域名择优器：跨同步轮次保持冠军记忆
+  private let domainSelector = DomainSelector()
+  /// 最近一次探活结果（当前域名+延迟），供设置页展示
+  public private(set) var currentProbe: DomainProbe?
 
   /// AppDelegate 启动收尾 + 定时同步（后台静默）
   static func sharedBootstrap() async {
@@ -65,10 +69,20 @@ public final class AppModel {
     syncing = true
     lastError = nil
     defer { syncing = false }
+    // 域名择优：探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
+    let candidates = DomainPool.candidates(customBaseURL: settings.baseURL)
+    guard let probe = await domainSelector.pickBest(candidates: candidates) else {
+      lastError = "全部站点域名不可达，请检查网络或稍后重试"
+      lastSummary = SyncSummary(fetchedCount: 0, changedCount: 0, detailCount: 0,
+                                durationSeconds: 0, error: lastError)
+      return
+    }
+    currentProbe = probe
     let engine = SyncEngine(
-      client: ButaiClient(settings: settings),
+      client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
-      settings: settings
+      settings: settings,
+      selector: domainSelector
     )
     let summary = await engine.run()
     lastSummary = summary

@@ -35,9 +35,19 @@ struct SettingsTabView: View {
                   )
               )
               .foregroundStyle(Theme.textPrimary)
-            Text("站点域名经常更换时，改成新的备用域名即可")
+            Text("站点域名经常更换时，改成新的备用域名即可；留空则自动使用内置域名池")
               .font(.system(size: 11))
               .foregroundStyle(Theme.textTertiary)
+            if let probe = app.currentProbe {
+              HStack(spacing: 6) {
+                Circle()
+                  .fill(Theme.accent)
+                  .frame(width: 5, height: 5)
+                Text("当前路由 \(URL(string: probe.baseURL)?.host ?? probe.baseURL) · \(Int(probe.latency * 1000)) ms")
+                  .font(.system(size: 11).monospacedDigit())
+                  .foregroundStyle(Theme.textSecondary)
+              }
+            }
           }
         }
 
