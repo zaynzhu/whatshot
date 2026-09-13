@@ -247,50 +247,100 @@ struct ChipGroupModel {
   let onChange: (String?) -> Void
 }
 
-/// 目录组：eyebrow + 选中态菜单。选中琥珀强调，未选中文字次要，
-/// 与页面 eyebrow 层级同源——筛选条读作「目录」而不是「表单」
+/// 目录组：eyebrow + 自定义筛选浮层（深底 hairline 描边，弃用系统 Menu 的蓝灰原生观感）。
+/// 选中项琥珀强调，与页面 eyebrow 层级同源——筛选条读作「目录」而不是「表单」
 struct FilterChipGroup: View {
   let model: ChipGroupModel
+  @State private var open = false
 
   init(_ model: ChipGroupModel) {
     self.model = model
   }
 
   var body: some View {
-    Menu {
-      Button("全部") { model.onChange(nil) }
-      Divider()
-      ForEach(model.options, id: \.self) { option in
-        Button {
-          model.onChange(model.selection == option ? nil : option)
-        } label: {
-          if model.selection == option {
-            Label(option, systemImage: "checkmark")
-          } else {
-            Text(option)
+    VStack(alignment: .leading, spacing: 2) {
+      Text(model.eyebrow)
+        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+        .tracking(1.6)
+        .foregroundStyle(model.selection == nil ? Theme.textTertiary : Theme.accent)
+      HStack(spacing: 5) {
+        Text(model.selection ?? model.label)
+          .font(.system(size: 12.5, weight: model.selection == nil ? .medium : .semibold))
+          .foregroundStyle(Theme.textPrimary)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 8, weight: .bold))
+          .rotationEffect(.degrees(open ? 180 : 0))
+          .foregroundStyle(Theme.textTertiary)
+      }
+    }
+    .fixedSize()
+    .contentShape(Rectangle())
+    .onTapGesture { open.toggle() }
+    .popover(isPresented: $open, arrowEdge: .top) {
+      FilterOverlay(model: model) { value in
+        model.onChange(value)
+        open = false
+      }
+    }
+  }
+}
+
+/// 自定义筛选浮层：与画廊同源的深色面板、选项竖排、选中琥珀，非系统菜单观感
+/// popover 宽度随内容（fixedSize），长选项列表（类型 23 项）内部滚动
+struct FilterOverlay: View {
+  let model: ChipGroupModel
+  let onSelect: (String?) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      // 顶部「全部」复位项（选中态 = 空时显示琥珀点）
+      overlayRow(label: "全部", selected: model.selection == nil, accentWhenSelected: true) {
+        onSelect(nil)
+      }
+      Rectangle()
+        .fill(Theme.hairline)
+        .frame(height: 1)
+        .padding(.vertical, 2)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(model.options, id: \.self) { option in
+            overlayRow(label: option, selected: model.selection == option, accentWhenSelected: true) {
+              // 再次点击已选项 = 取消该筛选
+              onSelect(model.selection == option ? nil : option)
+            }
           }
         }
       }
-    } label: {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(model.eyebrow)
-          .font(.system(size: 9, weight: .semibold).monospacedDigit())
-          .tracking(1.6)
-          .foregroundStyle(model.selection == nil ? Theme.textTertiary : Theme.accent)
-        HStack(spacing: 5) {
-          Text(model.selection ?? model.label)
-            .font(.system(size: 12.5, weight: model.selection == nil ? .medium : .semibold))
-            .foregroundStyle(model.selection == nil ? Theme.textPrimary : Theme.textPrimary)
-          Image(systemName: "chevron.down")
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(Theme.textTertiary)
-        }
+      .frame(maxHeight: min(CGFloat(model.options.count) * 34, 340))
+    }
+    .padding(.vertical, 6)
+    .padding(.horizontal, 8)
+    .background(Theme.elevated)
+    .overlay(
+      RoundedRectangle(cornerRadius: Theme.radiusCard)
+        .stroke(Theme.hairline, lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard))
+  }
+
+  private func overlayRow(label: String, selected: Bool, accentWhenSelected: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 7) {
+        // 选中标记：琥珀小圆点（比 checkmark 克制，与 eyebrow 单色纪律一致）
+        Circle()
+          .fill(selected && accentWhenSelected ? Theme.accent : Color.clear)
+          .frame(width: 4, height: 4)
+        Text(label)
+          .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+          .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+        Spacer(minLength: 20)
       }
-      .fixedSize()
+      .padding(.horizontal, 9)
+      .padding(.vertical, 7)
+      .fixedSize(horizontal: false, vertical: true)
       .contentShape(Rectangle())
     }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
+    .buttonStyle(.plain)
   }
 }
 
@@ -305,8 +355,12 @@ struct SortTail: View {
       Rectangle()
         .fill(Theme.hairline)
         .frame(width: 1, height: 13)
-        .padding(.horizontal, 13)
-      ForEach(kinds, id: \.self) { option in
+        .padding(.horizontal, 15)
+      // 两项间拉开：排序是“并列模式”而不是连续按钮组，间距给到 24
+      ForEach(Array(kinds.enumerated()), id: \.offset) { index, option in
+        if index > 0 {
+          Spacer().frame(width: 24)
+        }
         Button {
           onSelect(option)
         } label: {
