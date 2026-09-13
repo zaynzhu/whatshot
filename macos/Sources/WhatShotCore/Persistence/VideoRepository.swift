@@ -179,22 +179,23 @@ public struct VideoRepository: Sendable {
 
   /// 年代档位 → 年份区间映射（对齐但ai0 字典 t3：近三年/2026…2017/20年代…更早）
   static func yearRange(for bucket: String, now: Date = Date()) -> (low: Int, high: Int)? {
+    // 1. 特殊档位
     let calendar = Calendar(identifier: .gregorian)
     let currentYear = calendar.component(.year, from: now)
-    func digits(_ s: String) -> Int? { Int(s.prefix(4)) }
     if bucket == "近三年" { return (currentYear - 2, currentYear) }
     if bucket == "更早" { return (Int.min, 1979) }
-    if let y = digits(bucket) {
-      if bucket.count == 4 { return (y, y) }                       // 2026 → 2026
-      if let suffix = bucket.split(separator: "年代").first, let decade = Int(suffix) {
-        let high = decade + 9                                       // 90年代 → 1990-1999
-        return (decade, high)
+    // 2. 「N年代」档位（20年代/10年代/00年代/90年代/80年代），必须先于纯数字解析：
+    //    "10年代" 的 prefix(4) 会截出 "10" 被当年份。
+    //    世纪归属按字典语义：00/10/20 → 2000+n，80/90 → 1900+n（n≥50 视为上世纪，唯一且稳定）
+    if bucket.hasSuffix("年代") {
+      let prefix = String(bucket.dropLast(2))
+      if let n = Int(prefix), n >= 0, n < 100 {
+        let century = n >= 50 ? 1900 : 2000
+        return (century + n, century + n + 9)
       }
     }
-    if bucket.hasSuffix("年代") {                                    // 20/10/00年代
-      let prefix = String(bucket.dropLast(2))
-      if let decade = Int(prefix) { return (decade * 100, decade * 100 + 9) }  // 20年代 → 2020-2029
-    }
+    // 3. 纯四位年份（2026 → 2026）
+    if bucket.count == 4, let y = Int(bucket) { return (y, y) }
     return nil
   }
 
