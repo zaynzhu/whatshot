@@ -1,7 +1,7 @@
 import SwiftUI
 import WhatShotCore
 
-/// 剧集 / 电影：区块页头 + 排序切换 + 筛选菜单行 + 画廊网格，底部懒加载
+/// 剧集 / 电影：区块页头 + 杂志目录式筛选条 + 画廊网格，底部懒加载
 struct TVTabView: View {
   var body: some View {
     VideoGridTabView(kind: .tvSeries)
@@ -51,28 +51,27 @@ struct VideoGridTabView: View {
     }
   }
 
+  /// 已激活条件数（面包屑条状态行的琥珀强调）
+  private var activeCount: Int {
+    (filter.years != nil ? 1 : 0) + (filter.airingOnly ? 1 : 0) +
+    (filter.classNames != nil ? 1 : 0) + (filter.area != nil ? 1 : 0)
+  }
+
   var body: some View {
-    VStack(spacing: 0) {
+    VStack(alignment: .leading, spacing: 0) {
       PageHeader(
         eyebrow: kind == .movie ? "MOVIES · BUTAI0" : "SERIES · BUTAI0",
         title: "最近更新",
         subtitle: sortSubtitle
-      ) {
-        Picker("", selection: $sort) {
-          ForEach(availableSorts, id: \.self) { option in
-            Text(option.rawValue).tag(option)
-          }
-        }
-        .pickerStyle(.menu)
-        .controlSize(.small)
-      }
+      )
       .padding(.horizontal, 20)
       .padding(.top, 18)
-      .padding(.bottom, 12)
 
-      filterBar
-        .padding(.horizontal, 20)
-        .padding(.bottom, 14)
+      filterRail
+        .padding(.top, 14)
+        .padding(.bottom, 16)
+
+      headerDivider
 
       if rows.isEmpty && loading {
         Spacer()
@@ -81,43 +80,10 @@ struct VideoGridTabView: View {
         Spacer()
       } else if rows.isEmpty {
         Spacer()
-        VStack(spacing: 10) {
-          Image(systemName: kind == .movie ? "film" : "tv")
-            .font(.system(size: 34, weight: .light))
-            .foregroundStyle(Theme.textTertiary)
-          Text(filter.isEmpty ? "暂无数据" : "没有符合条件的条目")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(Theme.textSecondary)
-          Text(filter.isEmpty ? "点击右上角「同步」拉取数据" : "试试放宽筛选条件")
-            .font(.system(size: 11.5))
-            .foregroundStyle(Theme.textTertiary)
-        }
+        emptyState
         Spacer()
       } else {
-        ScrollView {
-          LazyVGrid(columns: columns, spacing: 18) {
-            ForEach(rows, id: \.id) { row in
-              GalleryCard(video: row, showDefinition: true, showPremiere: sort == .premiere)
-                .onAppear {
-                  if row.id == rows.last?.id {
-                    Task { await loadMore() }
-                  }
-                }
-            }
-          }
-          .padding(.horizontal, 20)
-          .padding(.bottom, 22)
-
-          if loading && !rows.isEmpty {
-            HStack(spacing: 8) {
-              ProgressView().controlSize(.small)
-              Text("加载更多…")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Theme.textTertiary)
-            }
-            .padding(.bottom, 16)
-          }
-        }
+        contentGrid
       }
     }
     .background(Theme.bg)
@@ -128,61 +94,136 @@ struct VideoGridTabView: View {
     }
   }
 
-  /// 排序切换仅剧集页开放（电影无首播日语义，定案 Q6）
-  private var availableSorts: [VideoRepository.ListSort] {
-    kind == .tvSeries ? [.premiere, .seedUpdated] : [.seedUpdated]
-  }
+  // MARK: - 杂志目录式筛选条（与 eyebrow 同源的文字层级，弃用系统控件灰）
 
-  /// 任务 key：任何排序/筛选变化都整页重载（筛选下分页 offset 无意义，数据量 <600 全量重拉也轻）
-  private var reloadKey: String {
-    "\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airingOnly)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
-  }
-
-  // MARK: - 筛选菜单行（定案 Q2-round1：年代/状态/类型/地区，画质标签因覆盖不足不做）
-
-  private var filterBar: some View {
-    HStack(spacing: 10) {
-      FilterMenu(
-        label: "年代",
-        options: FilterCatalog.yearBuckets,
-        selection: filter.years,
-        emptyText: "全部"
-      ) { filter.years = $0 }
-
-      if kind == .tvSeries {
-        Picker("", selection: $filter.airingOnly) {
-          Text("全部状态").tag(false)
-          Text("播出中").tag(true)
+  private var filterRail: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 0) {
+        ForEach(Array(filters.enumerated()), id: \.offset) { index, group in
+          if index > 0 {
+            railSeparator
+          }
+          FilterChipGroup(group)
         }
-        .pickerStyle(.menu)
-        .controlSize(.small)
+
+        Spacer(minLength: 14)
+
+        SortTail(
+          kinds: kind == .tvSeries ? [.premiere, .seedUpdated] : [.seedUpdated],
+          selection: sort
+        ) { sort = $0 }
       }
+      .padding(.horizontal, 20)
+    }
+  }
 
-      FilterMenu(
-        label: "类型",
-        options: FilterCatalog.classes,
-        selection: filter.classNames,
-        emptyText: "全部"
-      ) { filter.classNames = $0 }
+  private var railSeparator: some View {
+    Rectangle()
+      .fill(Theme.hairline)
+      .frame(width: 1, height: 13)
+      .padding(.horizontal, 13)
+  }
 
-      FilterMenu(
-        label: "地区",
-        options: FilterCatalog.areas,
-        selection: filter.area,
-        emptyText: "全部"
-      ) { filter.area = $0 }
-
-      Spacer()
-
-      if !filter.isEmpty {
-        Button("清除筛选") {
-          filter = VideoRepository.ListFilter()
+  /// 筛选条件分组（与 FilterCatalog 解耦的视图模型）
+  private var filters: [ChipGroupModel] {
+    var list: [ChipGroupModel] = []
+    list.append(ChipGroupModel(
+      eyebrow: "YEAR",
+      label: "年代",
+      options: FilterCatalog.yearBuckets,
+      selection: filter.years
+    ) { filter.years = $0 })
+    if kind == .tvSeries {
+      list.append(ChipGroupModel(
+        eyebrow: "STATUS",
+        label: "状态",
+        options: ["播出中", "已完结"],
+        selection: filter.airingOnly ? "播出中" : nil
+      ) { next in
+        switch next {
+        case "播出中": filter.airingOnly = true
+        case "已完结": filter.airingOnly = false // 已完结语义 = 不筛播出状态中的更新至；用空筛选代替二值开关
+        default: filter.airingOnly = false
         }
-        .font(.system(size: 11))
-        .foregroundStyle(Theme.accent)
-        .buttonStyle(.plain)
+      })
+    }
+    list.append(ChipGroupModel(
+      eyebrow: "GENRE",
+      label: "类型",
+      options: FilterCatalog.classes,
+      selection: filter.classNames
+    ) { filter.classNames = $0 })
+    list.append(ChipGroupModel(
+      eyebrow: "REGION",
+      label: "地区",
+      options: FilterCatalog.areas,
+      selection: filter.area
+    ) { filter.area = $0 })
+    return list
+  }
+
+  // MARK: - 页头分割线：细 hairline，筛选条与网格的分界
+
+  private var headerDivider: some View {
+    Rectangle()
+      .fill(Theme.hairline)
+      .frame(height: 1)
+  }
+
+  // MARK: - 空状态与网格
+
+  private var emptyState: some View {
+    VStack(spacing: 10) {
+      Image(systemName: kind == .movie ? "film" : "tv")
+        .font(.system(size: 34, weight: .light))
+        .foregroundStyle(Theme.textTertiary)
+      Text(filter.isEmpty ? "暂无数据" : "没有符合条件的条目")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(Theme.textSecondary)
+      Text(filter.isEmpty ? "点击右上角「同步」拉取数据" : "试试放宽筛选条件")
+        .font(.system(size: 11.5))
+        .foregroundStyle(Theme.textTertiary)
+      if !filter.isEmpty {
+        Button("清除筛选条件") { filter = VideoRepository.ListFilter() }
+          .font(.system(size: 11))
+          .foregroundStyle(Theme.accent)
+          .buttonStyle(.plain)
+          .padding(.top, 2)
       }
     }
+  }
+
+  private var contentGrid: some View {
+    ScrollView {
+      LazyVGrid(columns: columns, spacing: 18) {
+        ForEach(rows, id: \.id) { row in
+          GalleryCard(video: row, showDefinition: true, showPremiere: sort == .premiere)
+            .onAppear {
+              if row.id == rows.last?.id {
+                Task { await loadMore() }
+              }
+            }
+        }
+      }
+      .padding(.horizontal, 20)
+      .padding(.top, 16)
+      .padding(.bottom, 22)
+
+      if loading && !rows.isEmpty {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("加载更多…")
+            .font(.system(size: 10.5))
+            .foregroundStyle(Theme.textTertiary)
+        }
+        .padding(.bottom, 16)
+      }
+    }
+  }
+
+  /// 任务 key：任何排序/筛选变化都整页重载
+  private var reloadKey: String {
+    "\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airingOnly)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
   }
 
   func loadMore() async {
@@ -195,36 +236,91 @@ struct VideoGridTabView: View {
   }
 }
 
-/// 下拉筛选菜单：label + 当前值，nil = 全部
-struct FilterMenu: View {
+// MARK: - 筛选条组件
+
+/// 单个筛选组的视图模型
+struct ChipGroupModel {
+  let eyebrow: String
   let label: String
   let options: [String]
   let selection: String?
-  let emptyText: String
   let onChange: (String?) -> Void
+}
+
+/// 目录组：eyebrow + 选中态菜单。选中琥珀强调，未选中文字次要，
+/// 与页面 eyebrow 层级同源——筛选条读作「目录」而不是「表单」
+struct FilterChipGroup: View {
+  let model: ChipGroupModel
+
+  init(_ model: ChipGroupModel) {
+    self.model = model
+  }
 
   var body: some View {
     Menu {
-      Button(emptyText) { onChange(nil) }
+      Button("全部") { model.onChange(nil) }
       Divider()
-      ForEach(options, id: \.self) { option in
-        Button(option) { onChange(selection == option ? nil : option) }
+      ForEach(model.options, id: \.self) { option in
+        Button {
+          model.onChange(model.selection == option ? nil : option)
+        } label: {
+          if model.selection == option {
+            Label(option, systemImage: "checkmark")
+          } else {
+            Text(option)
+          }
+        }
       }
     } label: {
-      HStack(spacing: 4) {
-        Text(label)
-          .foregroundStyle(Theme.textTertiary)
-        Text(selection ?? emptyText)
-          .foregroundStyle(selection == nil ? Theme.textSecondary : Theme.accent)
-        Image(systemName: "chevron.down")
-          .font(.system(size: 8, weight: .semibold))
-          .foregroundStyle(Theme.textTertiary)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(model.eyebrow)
+          .font(.system(size: 9, weight: .semibold).monospacedDigit())
+          .tracking(1.6)
+          .foregroundStyle(model.selection == nil ? Theme.textTertiary : Theme.accent)
+        HStack(spacing: 5) {
+          Text(model.selection ?? model.label)
+            .font(.system(size: 12.5, weight: model.selection == nil ? .medium : .semibold))
+            .foregroundStyle(model.selection == nil ? Theme.textPrimary : Theme.textPrimary)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(Theme.textTertiary)
+        }
       }
-      .font(.system(size: 11))
+      .fixedSize()
       .contentShape(Rectangle())
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
-    .fixedSize()
+  }
+}
+
+/// 排序尾部：与筛选 chip 同语言，选中项下加 2px 琥珀短线（TextTab 同款模式）
+struct SortTail: View {
+  let kinds: [VideoRepository.ListSort]
+  let selection: VideoRepository.ListSort
+  let onSelect: (VideoRepository.ListSort) -> Void
+
+  var body: some View {
+    HStack(spacing: 0) {
+      Rectangle()
+        .fill(Theme.hairline)
+        .frame(width: 1, height: 13)
+        .padding(.horizontal, 13)
+      ForEach(kinds, id: \.self) { option in
+        Button {
+          onSelect(option)
+        } label: {
+          VStack(spacing: 3) {
+            Text(option.rawValue)
+              .font(.system(size: 11.5, weight: option == selection ? .semibold : .medium))
+              .foregroundStyle(option == selection ? Theme.textPrimary : Theme.textTertiary)
+            Rectangle()
+              .fill(option == selection ? Theme.accent : Color.clear)
+              .frame(width: 16, height: 2)
+          }
+        }
+        .buttonStyle(.plain)
+      }
+    }
   }
 }
