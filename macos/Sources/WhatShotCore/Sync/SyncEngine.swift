@@ -17,8 +17,8 @@ public struct SyncSummary: Sendable, Equatable {
   }
 }
 
-/// 同步引擎：热门榜 3 个 + 电影/剧集最近更新页；变化条目补拉详情。
-/// 单次运行约 10~20 个请求，2 秒限频下一分钟内完成。
+/// 同步引擎：热门榜 3 个 + 电影/剧集最近更新页；变化条目补拉详情；剧集首播日豆瓣补全。
+/// butai0 单次运行约 10~20 个请求；豆瓣补全三档限速（稳态 10 / 积压 30 / 护栏 30）。
 /// 域名故障降级：同一域名连续 2 次请求失败（4 秒以上持续不可用）即判定故障，
 /// 通过 selector 换域名后从失败步骤继续同步；切不动才计入失败。
 public struct SyncEngine: Sendable {
@@ -26,13 +26,29 @@ public struct SyncEngine: Sendable {
   let selector: DomainSelector?
   let repo: VideoRepository
   let settings: ButaiSettings
+  /// 豆瓣客户端可注入（测试用 mock）；默认懒建。主同步不依赖它，失败只计 warning
+  public var douban: DoubanClient?
+
+  /// 首播日补全三档限速（2026-09-13 实测定案，requirements.md 定案四）
+  public struct PremiereBudget: Sendable {
+    public var steadyPerRun: Int      // 稳态：每周期最多 10 条
+    public var backlogTrigger: Int    // 积压阈值：> 30 未补全
+    public var backlogPerRun: Int     // 积压清偿：放宽到 30 条
+    public init(steadyPerRun: Int = 10, backlogTrigger: Int = 30, backlogPerRun: Int = 30) {
+      self.steadyPerRun = steadyPerRun
+      self.backlogTrigger = backlogTrigger
+      self.backlogPerRun = backlogPerRun
+    }
+  }
+  public var premiereBudget = PremiereBudget()
 
   public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
-              selector: DomainSelector? = nil) {
+              selector: DomainSelector? = nil, douban: DoubanClient? = nil) {
     self.client = client
     self.selector = selector
     self.repo = repo
     self.settings = settings
+    self.douban = douban
   }
 
   /// 带域名降级的请求执行器：连续 2 次失败换域名重试一次
@@ -131,6 +147,15 @@ public struct SyncEngine: Sendable {
     // 4. 历史观察裁剪（保留 90 天）
     _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
 
+    // 5. 剧集首播日豆瓣补全（一期单源例外，requirements.md 定案二/四）。
+    // 三档限速：稳态 10 / 积压>30 放宽 30 / 绝对护栏 30；豆瓣任何失败只计 warning，不阻断主同步
+    if let douban {
+      let summary = await backfillPremieres(douban: douban)
+      if let warning = summary.warning {
+        failures.append(warning)
+      }
+    }
+
     let finishedAt = Date()
     let duration = finishedAt.timeIntervalSince(startedAt)
     let error = failures.isEmpty ? nil : failures.joined(separator: "；")
@@ -139,6 +164,43 @@ public struct SyncEngine: Sendable {
       try? await repo.finishSyncRun(id: runID, status: status, fetched: fetched, changed: changed, error: error, at: finishedAt)
     }
     return SyncSummary(fetchedCount: fetched, changedCount: changed, detailCount: detailCount, durationSeconds: duration, error: error)
+  }
+
+  /// 首播日补全结果（供摘要展示）
+  public struct PremiereBackfillSummary: Sendable, Equatable {
+    public var fetched: Int        // 本次尝试抓取条数
+    public var withDate: Int       // 拿到首播日
+    public var warning: String?
+  }
+
+  /// 补全一批首播日。返回 warning（nil = 本批无异常）。
+  /// 停批规则：429 等待 Retry-After 后放弃本批；401/403/安全页立即停批——不重试不绕过
+  func backfillPremieres(douban: DoubanClient) async -> PremiereBackfillSummary {
+    let pending = (try? await repo.premierePendingCount()) ?? 0
+    guard pending > 0 else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
+    let limit = pending > premiereBudget.backlogTrigger ? premiereBudget.backlogPerRun : premiereBudget.steadyPerRun
+    let candidates = (try? await repo.premiereCandidates(limit: limit)) ?? []
+    var withDate = 0
+    var blocked: String?
+    for doubanId in candidates {
+      do {
+        let date = try await douban.fetchPremiereDate(doubanId: doubanId)
+        // 无日期也记录抓取过（premiere_fetched_at 置位），避免每轮反复重查已知无日期的条目
+        try? await repo.setPremiereDate(doubanId: doubanId, date: date, at: Date())
+        if date != nil { withDate += 1 }
+      } catch let DoubanClient.DoubanError.rateLimited(retryAfter) {
+        let wait = retryAfter.map { "（等待 \($0) 秒后放弃本批）" } ?? ""
+        blocked = "豆瓣限流，本批补全中止\(wait)；已补 \(withDate) 部，剩余下轮继续"
+        break
+      } catch DoubanClient.DoubanError.blocked(let status) {
+        blocked = "豆瓣拒绝访问(HTTP \(status))，本批补全中止；已补 \(withDate) 部，剩余下轮继续"
+        break
+      } catch {
+        // 单条网络抖动/解析异常：跳过该条继续（下一轮会重查此条）
+        continue
+      }
+    }
+    return PremiereBackfillSummary(fetched: candidates.count, withDate: withDate, warning: blocked)
   }
 
   func describe(_ error: Error) -> String {

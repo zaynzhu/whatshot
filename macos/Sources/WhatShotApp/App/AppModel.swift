@@ -82,7 +82,8 @@ public final class AppModel {
       client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
       settings: settings,
-      selector: domainSelector
+      selector: domainSelector,
+      douban: DoubanClient() // 独立限频器，与 butai0 各自计数
     )
     let summary = await engine.run()
     lastSummary = summary
