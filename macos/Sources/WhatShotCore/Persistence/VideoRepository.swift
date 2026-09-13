@@ -430,18 +430,23 @@ public struct VideoRepository: Sendable {
     }
   }
 
-  /// 待补全首播日的条目（有豆瓣 ID 且从未抓取过）。按资源更新新到旧排序，
+  /// 待补全首播日的条目：从未抓取，或无日期且距上次抓取超过 recheckHours（豆瓣日期可能后来补上，
+  /// 放开地区白名单后需给旧数据重查机会；有日期的条目不重查）。按资源更新新到旧排序，
   /// 积压清偿由调用方按返回数量决定放大上限。
-  public func premiereCandidates(limit: Int) async throws -> [Int] {
-    try await queue.run { db in
+  public func premiereCandidates(limit: Int, recheckHours: Int = 24, now: Date = Date()) async throws -> [Int] {
+    let threshold = Int(now.timeIntervalSince1970) - recheckHours * 3600
+    return try await queue.run { db in
       let stmt = try db.prepare("""
         SELECT douban_id FROM videos
-        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0 AND premiere_fetched_at IS NULL
+        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0
+          AND (premiere_fetched_at IS NULL
+               OR (premiere_date IS NULL AND premiere_fetched_at < ?))
         ORDER BY seed_updated_at DESC LIMIT ?
       """)
       defer { sqlite3_finalize(stmt) }
       SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
-      SQLiteDatabase.bind(stmt, 2, limit)
+      SQLiteDatabase.bind(stmt, 2, threshold)
+      SQLiteDatabase.bind(stmt, 3, limit)
       var ids: [Int] = []
       while sqlite3_step(stmt) == SQLITE_ROW {
         if let id = db.int(stmt, 0) { ids.append(id) }
@@ -450,15 +455,19 @@ public struct VideoRepository: Sendable {
     }
   }
 
-  /// 未补全条目总数（判断积压清偿档位）
-  public func premierePendingCount() async throws -> Int {
-    try await queue.run { db in
+  /// 未补全条目总数（判断积压清偿档位；口径与 premiereCandidates 一致，含到期重查）
+  public func premierePendingCount(recheckHours: Int = 24, now: Date = Date()) async throws -> Int {
+    let threshold = Int(now.timeIntervalSince1970) - recheckHours * 3600
+    return try await queue.run { db in
       let stmt = try db.prepare("""
         SELECT COUNT(*) FROM videos
-        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0 AND premiere_fetched_at IS NULL
+        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0
+          AND (premiere_fetched_at IS NULL
+               OR (premiere_date IS NULL AND premiere_fetched_at < ?))
       """)
       defer { sqlite3_finalize(stmt) }
       SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
+      SQLiteDatabase.bind(stmt, 2, threshold)
       guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
       return db.int(stmt, 0) ?? 0
     }

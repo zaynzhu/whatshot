@@ -59,26 +59,28 @@ public struct DoubanClient: Sendable {
     return Self.parsePremiereDate(from: data)
   }
 
-  /// 解析 pubdate：数组内只取「完整 YYYY-MM-DD 且标注中国大陆」的日期；
-  /// 其他精度/地区不补假日期（不把仅年份补成 1-1），按自然日存。
-  /// 样例：["2026-08-31(中国大陆)"] → "2026-08-31"；["2025(美国)"] → nil；["2026-08-31"]（无地区）→ nil
+  /// 解析 pubdate：收集所有完整 YYYY-MM-DD 日期（不分地区），取最早的一个 = 真实首播日
+  /// （2026-09-13 用户定案"全都要"：地区白名单与优先级都不要）。
+  /// 仅年份/无完整日期不补假日期（不把仅年份补成 1-1），按自然日存。
+  /// 样例：["2026-08-31(中国大陆)"] → "2026-08-31"；["2026-09-10(韩国)"] → "2026-09-10"；
+  /// ["2026-09-01(美国)", "2026-08-20(中国大陆)"] → "2026-08-20"（最早优先）；["2025(美国)"] → nil
   public static func parsePremiereDate(from data: Data) -> String? {
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let pubdates = json["pubdate"] as? [String] else {
       return nil
     }
+    var earliest: String?
     for pubdate in pubdates {
-      // 拆「日期(地区)」：括号内是地区标记
-      let parts = pubdate.split(separator: "(", maxSplits: 1).map(String.init)
-      let datePart = parts.first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-      let regionPart = parts.count > 1 ? parts[1].dropLast().description : nil // 去掉右括号
-      guard regionPart == "中国大陆" else { continue }
+      // 拆「日期(地区)」：地区标记不参与过滤
+      let datePart = pubdate.split(separator: "(", maxSplits: 1).first
+        .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
       // 完整日期校验：YYYY-MM-DD 严格 10 位
       guard datePart.count == 10, datePart[datePart.index(datePart.startIndex, offsetBy: 4)] == "-" else { continue }
       let digits = datePart.replacingOccurrences(of: "-", with: "")
       guard digits.count == 8, digits.allSatisfy(\.isNumber) else { continue }
-      return datePart
+      // YYYY-MM-DD 字典序即时间序，直接字符串比较取最早
+      if earliest == nil || datePart < earliest! { earliest = datePart }
     }
-    return nil
+    return earliest
   }
 }

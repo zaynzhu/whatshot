@@ -34,24 +34,27 @@ struct PremiereTests {
     #expect(parse(["2026-08-31(中国大陆)"]) == "2026-08-31")
   }
 
-  /// 多地区数组：优先命中中国大陆条目
-  @Test func parsePicksMainlandAmongMultiple() {
-    #expect(parse(["2026-08-20(美国)", "2026-08-31(中国大陆)"]) == "2026-08-31")
+  /// 多地区数组：取最早完整日期（新口径：不分地区；美 08-20 早于陆 08-31）
+  @Test func parsePicksEarliestAmongMultiple() {
+    #expect(parse(["2026-08-20(美国)", "2026-08-31(中国大陆)"]) == "2026-08-20")
   }
 
-  /// 仅年份不补假日期（不得补成 1-1）
+  /// 非大陆地区：照收（定案"全都要"，不分地区）
+  @Test func parseAcceptsForeignRegion() {
+    #expect(parse(["2026-09-10(韩国)"]) == "2026-09-10")
+    #expect(parse(["2001-09-27(美国)"]) == "2001-09-27")
+  }
+
+  /// 多地区多日期：取最早 = 真实首播（数组顺序不影响结果）
+  @Test func parsePicksEarliestAcrossRegions() {
+    #expect(parse(["2026-09-10(韩国)", "2026-09-01(中国大陆)"]) == "2026-09-01")
+    #expect(parse(["2026-08-20(中国大陆)", "2026-09-10(韩国)"]) == "2026-08-20")
+  }
+
+  /// 仅年份仍然不补假日期
   @Test func parseRejectsYearOnly() {
     #expect(parse(["2025(中国大陆)"]) == nil)
-  }
-
-  /// 无地区标记的完整日期不取（可能任意地区）
-  @Test func parseRejectsDateWithoutRegion() {
-    #expect(parse(["2026-08-31"]) == nil)
-  }
-
-  /// 非大陆地区不取
-  @Test func parseRejectsForeignRegion() {
-    #expect(parse(["2001-09-27(美国)"]) == nil)
+    #expect(parse(["2025(美国)"]) == nil)
   }
 
   /// 缺字段/坏 JSON 容错返回 nil
@@ -138,23 +141,34 @@ struct PremiereTests {
 
   // MARK: - 补全候选与三档限速输入（定案四）
 
-  @Test func premiereCandidatesSkipFetched() async throws {
+  /// 重查规则：无日期条目 24h 内不重查；过期后重查（豆瓣可能后来补上）；有日期永不重查
+  @Test func premiereCandidatesRecheck() async throws {
     let repo = try makeRepo()
     let now = Date()
     for i in 1...3 {
       _ = try await repo.upsert(makeVideo(id: i), chartScope: nil, chartRank: nil, now: now)
     }
-    let pendingBefore = try await repo.premierePendingCount()
-    #expect(pendingBefore == 3)
-    let candidates = try await repo.premiereCandidates(limit: 10)
-    #expect(candidates.count == 3)
+    let all = try await repo.premiereCandidates(limit: 10, now: now)
+    #expect(all.count == 3)
 
-    // 无日期也置位 fetched_at：不反复重查已知无日期条目
-    try await repo.setPremiereDate(doubanId: candidates[0], date: nil, at: now)
-    let pendingAfter = try await repo.premierePendingCount()
-    #expect(pendingAfter == 2)
-    let next = try await repo.premiereCandidates(limit: 10)
-    #expect(!next.contains(candidates[0]))
+    // 1 号拿到日期；2 号无日期；3 号无日期但刚抓过（1 小时前）
+    try await repo.setPremiereDate(doubanId: all[0], date: "2026-09-01", at: now)
+    try await repo.setPremiereDate(doubanId: all[1], date: nil, at: now)
+    try await repo.setPremiereDate(doubanId: all[2], date: nil, at: now.addingTimeInterval(-3600))
+
+    let hourLater = now.addingTimeInterval(7200)
+    let fresh = try await repo.premiereCandidates(limit: 10, now: hourLater)
+    #expect(!fresh.contains(all[0]))        // 有日期：不重查
+    #expect(!fresh.contains(all[1]))        // 无日期但刚抓过：不重查
+    #expect(!fresh.contains(all[2]))        // 3 小时前抓的：仍不重查
+    #expect(try await repo.premierePendingCount(now: hourLater) == 0)
+
+    // 25 小时后：两个无日期条目到期重查
+    let dayLater = now.addingTimeInterval(25 * 3600)
+    let due = try await repo.premiereCandidates(limit: 10, now: dayLater)
+    #expect(due.contains(all[1]) && due.contains(all[2]))
+    #expect(!due.contains(all[0]))
+    #expect(try await repo.premierePendingCount(now: dayLater) == 2)
   }
 
   // MARK: - 筛选（定案一：年代/状态/类型/地区，纯本地 WHERE）
