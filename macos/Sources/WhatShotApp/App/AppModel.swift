@@ -21,6 +21,8 @@ public final class AppModel {
   private let domainSelector = DomainSelector()
   /// 最近一次探活结果（当前域名+延迟），供设置页展示
   public private(set) var currentProbe: DomainProbe?
+  /// 最近一次发布页自动发现的域名列表（nil = 发布页不可达用了兜底池），供设置页展示
+  public private(set) var lastPublishedDomains: [String]?
 
   /// AppDelegate 启动收尾 + 定时同步（后台静默）
   static func sharedBootstrap() async {
@@ -72,6 +74,7 @@ public final class AppModel {
     // 域名择优：先抓发布页自动发现官方域名（失败静默回落内置兜底池），
     // 再探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
     let published = await DomainPool.fetchPublishedDomains()
+    lastPublishedDomains = published // nil = 发布页不可达，设置页展示兜底池状态
     let candidates = DomainPool.candidates(customBaseURL: settings.baseURL, published: published)
     guard let probe = await domainSelector.pickBest(candidates: candidates) else {
       lastError = "全部站点域名不可达，请检查网络或稍后重试"

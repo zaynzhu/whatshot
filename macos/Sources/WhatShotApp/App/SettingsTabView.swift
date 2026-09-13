@@ -35,7 +35,7 @@ struct SettingsTabView: View {
                   )
               )
               .foregroundStyle(Theme.textPrimary)
-            Text("站点域名经常更换时，改成新的备用域名即可；留空则自动使用内置域名池")
+            Text("站点域名经常更换时，改成新的备用域名即可；留空则自动从发布页发现官方域名")
               .font(.system(size: 11))
               .foregroundStyle(Theme.textTertiary)
             if let probe = app.currentProbe {
@@ -44,6 +44,20 @@ struct SettingsTabView: View {
                   .fill(Theme.accent)
                   .frame(width: 5, height: 5)
                 Text("当前路由 \(URL(string: probe.baseURL)?.host ?? probe.baseURL) · \(Int(probe.latency * 1000)) ms")
+                  .font(.system(size: 11).monospacedDigit())
+                  .foregroundStyle(Theme.textSecondary)
+              }
+              // 发布页自动发现结果：与兜底池比对展示新增域名数（0 = 发布页与兜底一致）
+              let published = app.lastPublishedDomains
+              let discovered = published?.count ?? 0
+              let extra = published?.filter { !DomainPool.fallbackDomains.contains($0) }.count ?? 0
+              HStack(spacing: 6) {
+                Circle()
+                  .fill(published == nil ? Theme.textTertiary : Theme.accent)
+                  .frame(width: 5, height: 5)
+                Text(published == nil
+                     ? "发布页不可达，使用内置兜底池（\(DomainPool.fallbackDomains.count) 域名）"
+                     : "发布页发现 \(discovered) 个官方域名\(extra > 0 ? "（含 \(extra) 个兜底池外新域名）" : "")")
                   .font(.system(size: 11).monospacedDigit())
                   .foregroundStyle(Theme.textSecondary)
               }
