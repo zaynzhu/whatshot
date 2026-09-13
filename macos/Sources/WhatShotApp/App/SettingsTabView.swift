@@ -47,21 +47,19 @@ struct SettingsTabView: View {
                   .font(.system(size: 11).monospacedDigit())
                   .foregroundStyle(Theme.textSecondary)
               }
-              // 发布页自动发现结果：与兜底池比对展示新增域名数（0 = 发布页与兜底一致）
-              let published = app.lastPublishedDomains
-              let discovered = published?.count ?? 0
-              let extra = published?.filter { !DomainPool.fallbackDomains.contains($0) }.count ?? 0
-              HStack(spacing: 6) {
-                Circle()
-                  .fill(published == nil ? Theme.textTertiary : Theme.accent)
-                  .frame(width: 5, height: 5)
-                Text(published == nil
-                     ? "发布页不可达，使用内置兜底池（\(DomainPool.fallbackDomains.count) 域名）"
-                     : "发布页发现 \(discovered) 个官方域名\(extra > 0 ? "（含 \(extra) 个兜底池外新域名）" : "")")
-                  .font(.system(size: 11).monospacedDigit())
-                  .foregroundStyle(Theme.textSecondary)
-              }
             }
+            DomainPoolSection(
+              published: app.lastPublishedDomains,
+              pinnedDomain: $draft.pinnedDomain,
+              currentHost: app.currentProbe.flatMap { URL(string: $0.baseURL)?.host },
+              onPin: { pinned in
+                // 点选即保存（不等底部"保存设置"：钉域名是即时路由偏好，与同步间隔等配置不同类）
+                var next = draft
+                next.pinnedDomain = pinned
+                draft = next
+                Task { await app.updateSettings(next) }
+              }
+            )
           }
         }
 
@@ -255,5 +253,108 @@ struct SettingsTabView: View {
       }
       .buttonStyle(.plain)
     }
+  }
+}
+
+/// 官方域名池区块：收起时一行状态（发布页发现 N 个），展开列出全部域名。
+/// 点选域名 = 钉住（跳过探活直接用，失败仍自动降级）；再点已钉住的 = 取消回自动。
+/// 钉住/取消即时保存，不等底部「保存设置」
+struct DomainPoolSection: View {
+  let published: [String]?
+  @Binding var pinnedDomain: String?
+  let currentHost: String?
+  let onPin: (String?) -> Void
+  @State private var expanded = false
+
+  private var domains: [String] {
+    // 发布页结果优先展示（可能含兜底池外新域名）；不可达时展示兜底池
+    (published?.isEmpty == false ? published! : DomainPool.fallbackDomains)
+  }
+
+  private var headline: String {
+    if published == nil {
+      return "发布页不可达，展示内置兜底池（\(DomainPool.fallbackDomains.count) 域名）"
+    }
+    let extra = published!.filter { !DomainPool.fallbackDomains.contains($0) }.count
+    let extraNote = extra > 0 ? "（含 \(extra) 个兜底池外新域名）" : ""
+    return "发布页发现 \(published!.count) 个官方域名\(extraNote)，点击可固定使用"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+      } label: {
+        HStack(spacing: 6) {
+          Circle()
+            .fill(published == nil ? Theme.textTertiary : Theme.accent)
+            .frame(width: 5, height: 5)
+          Text(headline)
+            .font(.system(size: 11).monospacedDigit())
+            .foregroundStyle(Theme.textSecondary)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .bold))
+            .rotationEffect(.degrees(expanded ? 180 : 0))
+            .foregroundStyle(Theme.textTertiary)
+        }
+      }
+      .buttonStyle(.plain)
+
+      if expanded {
+        VStack(alignment: .leading, spacing: 0) {
+          // 自动档：钉住 nil = 探活择优（现状行为）
+          domainRow(host: nil, label: "自动（每次探活选最快）") {
+            onPin(nil)
+          }
+          Rectangle().fill(Theme.hairline).frame(height: 1)
+          ForEach(domains, id: \.self) { domain in
+            domainRow(
+              host: URL(string: DomainPool.normalized(domain) ?? domain)?.host ?? domain,
+              label: nil
+            ) {
+              // 再点已钉住的 = 取消
+              onPin(pinnedDomain == domain ? nil : domain)
+            }
+          }
+        }
+        .padding(.vertical, 4)
+        .background(Theme.bg, in: RoundedRectangle(cornerRadius: Theme.radiusControl))
+        .overlay(
+          RoundedRectangle(cornerRadius: Theme.radiusControl)
+            .stroke(Theme.hairline, lineWidth: 1)
+        )
+      }
+    }
+  }
+
+  /// 单行：钉住项琥珀点 + 主字色；当前路由加「当前」角标；nil host = 自动模式行
+  private func domainRow(host: String?, label: String?, action: @escaping () -> Void) -> some View {
+    let isPinned = pinnedDomain != nil && host == nil
+    let isCurrentDomain = host != nil && host == currentHost && pinnedDomain == nil
+    return Button(action: action) {
+      HStack(spacing: 7) {
+        Circle()
+          .fill(isPinned ? Theme.accent : Color.clear)
+          .frame(width: 4, height: 4)
+        Text(label ?? host ?? "")
+          .font(.system(size: 11, weight: isPinned || isCurrentDomain ? .semibold : .regular).monospacedDigit())
+          .foregroundStyle(isPinned || isCurrentDomain ? Theme.textPrimary : Theme.textSecondary)
+        if isCurrentDomain {
+          Text("当前")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Theme.accent)
+        }
+        if isPinned {
+          Text("已固定")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Theme.accent)
+        }
+        Spacer(minLength: 12)
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5.5)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 }

@@ -123,6 +123,14 @@ public actor DomainSelector {
     self.probePath = "/prod/api/v1/getVideoList?sc=3&app_id=83768d9ad4&identity=23734adac0301bccdcb107c4aa21f96c"
   }
 
+  /// 手动钉住域名的探活确认：通了设为冠军供同步直接用；不通返回 nil（调用方回落自动择优）。
+  /// 与 pickBest 的区别：不做全池比较——钉住语义是"优先用它"，不是"在它和其他之间选最快"
+  public func probePinned(_ baseURL: String, timeout: TimeInterval = 4) async -> DomainProbe? {
+    guard let probe = await probeOne(baseURL, timeout: timeout) else { return nil }
+    champion = baseURL
+    return probe
+  }
+
   /// 择优入口：先探冠军（上次成功的域名），通了直接用；失败才全池并行探活取最快。
   /// 返回 nil = 全池不可达。
   public func pickBest(candidates: [String], timeout: TimeInterval = 4) async -> DomainProbe? {

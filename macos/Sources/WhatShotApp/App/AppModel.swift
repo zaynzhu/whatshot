@@ -76,7 +76,16 @@ public final class AppModel {
     let published = await DomainPool.fetchPublishedDomains()
     lastPublishedDomains = published // nil = 发布页不可达，设置页展示兜底池状态
     let candidates = DomainPool.candidates(customBaseURL: settings.baseURL, published: published)
-    guard let probe = await domainSelector.pickBest(candidates: candidates) else {
+    // 手动钉住的域名跳过探活直接用（临时偏好）；探活一次确认可达后仍注入 selector，
+    // 同步中失败走既有自动降级回池，不永久锁死
+    var probe: DomainProbe?
+    if let pinned = settings.pinnedDomain, candidates.contains(pinned) {
+      probe = await domainSelector.probePinned(pinned)
+    }
+    if probe == nil {
+      probe = await domainSelector.pickBest(candidates: candidates)
+    }
+    guard let probe else {
       lastError = "全部站点域名不可达，请检查网络或稍后重试"
       lastSummary = SyncSummary(fetchedCount: 0, changedCount: 0, detailCount: 0,
                                 durationSeconds: 0, error: lastError)

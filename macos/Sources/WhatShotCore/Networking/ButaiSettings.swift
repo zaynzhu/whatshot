@@ -2,8 +2,12 @@ import Foundation
 
 /// 站点配置：域名可配置（该站域名经常更换），接口路径与公开参数固定
 public struct ButaiSettings: Codable, Equatable, Sendable {
-  /// 站点基址，例如 https://www.butai0.club ，末尾不带斜杠
+  /// 站点基址，例如 https://www.butai0.club ，末尾不带斜杠。
+  /// 非空时恒为最高优先（私设域名入口，发布页/兜底池都不含它）
   public var baseURL: String
+  /// 手动钉住的官方池域名（发布页列表里选的）。nil = 自动探活择优；
+  /// 钉住后跳过探活直接用，同步失败仍走自动降级回池（临时偏好，不等于 baseURL 永久钉死）
+  public var pinnedDomain: String?
   /// 同步间隔小时数（0 = 关闭后台自动同步）
   public var syncIntervalHours: Int
   /// 海报磁盘缓存上限 MB（0 = 关闭缓存）
@@ -21,8 +25,9 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
     tvListPages: 3
   )
 
-  public init(baseURL: String, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int) {
+  public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int) {
     self.baseURL = baseURL
+    self.pinnedDomain = pinnedDomain
     self.syncIntervalHours = syncIntervalHours
     self.posterCacheLimitMB = posterCacheLimitMB
     self.movieListPages = movieListPages

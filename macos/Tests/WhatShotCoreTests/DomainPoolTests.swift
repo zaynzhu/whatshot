@@ -102,3 +102,36 @@ struct DomainPoolTests {
     #expect(await selector.currentDomain == nil)
   }
 }
+/// 钉住域名解码：旧配置文件（无 pinnedDomain 字段）兼容 + 新字段往返
+@Test func pinnedDomainDecoding() throws {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whatshot-settings-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: dir) }
+
+  // 旧配置：无 pinnedDomain 字段
+  let oldJSON = #"{"baseURL":"https://www.butai0.club","syncIntervalHours":6,"posterCacheLimitMB":300,"movieListPages":3,"tvListPages":3}"#
+  try oldJSON.data(using: .utf8)!.write(to: dir.appendingPathComponent("settings.json"))
+  let store = SettingsStore(directory: dir)
+  let legacy = store.load()
+  #expect(legacy.pinnedDomain == nil)
+  #expect(legacy.baseURL == "https://www.butai0.club")
+
+  // 新配置：钉住后往返不丢
+  var pinned = legacy
+  pinned.pinnedDomain = "https://www.3bt0.com"
+  store.save(pinned)
+  #expect(store.load().pinnedDomain == "https://www.3bt0.com")
+
+  // 取消钉住（置 nil）往返
+  pinned.pinnedDomain = nil
+  store.save(pinned)
+  #expect(store.load().pinnedDomain == nil)
+}
+
+/// 钉住探活：可达域名注入冠军；不可达返回 nil（调用方回落自动）
+@Test func probePinnedBehavior() async {
+  let selector = DomainSelector()
+  let bad = await selector.probePinned("https://invalid.invalid.example", timeout: 0.5)
+  #expect(bad == nil)
+  #expect(await selector.currentDomain == nil)
+}
