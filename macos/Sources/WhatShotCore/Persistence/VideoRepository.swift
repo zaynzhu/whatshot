@@ -573,3 +573,5 @@ public struct VideoRepository: Sendable {
     )
   }
 }
+/// SwiftUI sheet(item:) 桥接
+extension VideoRepository.VideoRow: Identifiable {}

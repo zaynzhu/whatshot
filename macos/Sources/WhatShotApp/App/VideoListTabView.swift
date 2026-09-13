@@ -198,6 +198,7 @@ struct VideoGridTabView: View {
       LazyVGrid(columns: columns, spacing: 18) {
         ForEach(rows, id: \.id) { row in
           GalleryCard(video: row, showDefinition: true, showPremiere: sort == .premiere)
+            .onTapGesture { detailTarget = row }
             .onAppear {
               if row.id == rows.last?.id {
                 Task { await loadMore() }
@@ -219,7 +220,13 @@ struct VideoGridTabView: View {
         .padding(.bottom, 16)
       }
     }
+    .sheet(item: $detailTarget) { target in
+      DetailSheet(video: target, repo: app.repo)
+    }
   }
+
+  /// 详情浮层目标（sheet 需要 Identifiable）
+  @State private var detailTarget: VideoRepository.VideoRow?
 
   /// 任务 key：任何排序/筛选变化都整页重载
   private var reloadKey: String {
