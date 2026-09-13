@@ -194,9 +194,7 @@ private struct HeroMetaLine: View {
     if let imdb = cleanedScoreText(video.imdbScore) {
       segments.append("IM \(imdb)")
     }
-    if video.seedCount > 0 {
-      segments.append("\(video.seedCount) 资源")
-    }
+    // 种子/网盘数按用户定案（2026-09-13）不在界面展示，库内继续记录
     for (index, segment) in segments.enumerated() {
       if index > 0 {
         line = line + Text("  ·  ").foregroundColor(Theme.textTertiary)

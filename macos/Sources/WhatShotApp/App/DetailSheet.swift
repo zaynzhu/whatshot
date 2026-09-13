@@ -79,6 +79,20 @@ struct DetailSheet: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+
+      // 右上角关闭：sheet 模态在部分窗口层级下 Esc 会失效，显式按钮保证可关
+      Button {
+        dismiss()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(Theme.textTertiary)
+          .frame(width: 24, height: 24)
+          .background(Theme.bg, in: Circle())
+          .overlay(Circle().stroke(Theme.hairline, lineWidth: 1))
+      }
+      .buttonStyle(.plain)
+      .keyboardShortcut(.escape, modifiers: [])
     }
     .padding(20)
     .frame(width: 620)

@@ -272,7 +272,7 @@ struct PosterImage: View {
   }
 }
 
-/// 海报下方 meta 行：豆 7.8 · IM 7.4 · 214（· 4K）——纯评分与资源数，集数由 EpisodeStatusText 独立承担
+/// 海报下方 meta 行：豆 7.8 · IM 7.4（· 4K）——评分与画质；种子/网盘数按用户定案不展示（库内继续记录）
 /// 单文本截断
 struct VideoMetaLine: View {
   let video: VideoRepository.VideoRow
@@ -282,7 +282,6 @@ struct VideoMetaLine: View {
     var list: [String] = []
     if let douban = cleanScore(video.doubanScore) { list.append("豆 \(douban)") }
     if let imdb = cleanScore(video.imdbScore) { list.append("IM \(imdb)") }
-    if video.seedCount > 0 { list.append("\(video.seedCount)") }
     if showDefinition, let definition = definitionText { list.append(definition) }
     return list
   }
