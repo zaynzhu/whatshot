@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期唯一数据源。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
+WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期主数据源；**唯一例外：豆瓣 rexxar 接口仅限用库内 douban_id 补首播日**（剧集页首播排序依赖，取值口径"全都要取最早"，见 docs/requirements.md）。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
 
 一期明确不做：资源搜索（二期）、NAS 后端（架构已定为纯本地）、多源热度叠加（二期）。
 
@@ -33,7 +33,7 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 - 外部请求统一限频，同一站点连续请求间隔不低于 2 秒
 - 站点域名做池化择优（`DomainPool.swift`：同步前从发布页 butailing.com 自动发现官方域名，内置兜底池仅在发布页不可达时使用；用户自定义最高优先、探活选路、连续失败自动降级，机制细节见 docs/requirements.md）；接口解析必须容错，字段缺失不报错；`ejs`(更新至X集/全集/空)、`episodes`(总集数, "0"=未知)、`seed_num`/`wp_num`、`doub_id`/`IMDB_number` 等字段语义见 docs/requirements.md
 - 种子/网盘列表需 VIP，一期不得依赖 `all_seeds` 等数据
-- 同步状态、错误只展示给用户，不把凭据/接口参数打进日志
+- seed_num/wp_num 库内继续记录但**不在界面展示**（2026-09-13 用户定案）；同步状态、错误只展示给用户，不把凭据/接口参数打进日志
 
 ## 安全红线
 

@@ -18,14 +18,15 @@
 </div>
 
 > [!TIP]
-> WhatShot is a **fully local** macOS app focused on two questions: is a show or movie **hot right now** (charts, resource counts, ratings), and **how far along is it** (up to episode X / Y total / completed). No backend, no account, no data leaving your machine.
+> WhatShot is a **fully local** macOS app focused on two questions: is a show or movie **hot right now** (charts, ratings), and **how far along is it** (up to episode X / Y total / completed, ordered by premiere date). No backend, no account, no data leaving your machine.
 
 ## ✨ Features
 
 - **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title
 - **Episode progress tracking** -- "Up to episode 9", "24 total", "Completed" as a dedicated info row with a visual progress line
 - **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout
-- **Douban / IMDb ratings + resource counts** -- Aggregated heat signals per card in monospaced digits
+- **Premiere timeline** -- Series sorted by Douban premiere date (re-seeded classics no longer surface), with year / status / genre / region filters and a detail sheet (synopsis, cast, episode-progress log, Douban / IMDb links)
+- **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
 - **Data-source resilience** -- domains auto-discovered from the publish page (with a built-in fallback pool), probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
@@ -63,7 +64,7 @@ swift build --package-path macos --configuration release
 **Run tests**
 
 ```bash
-./scripts/test-macos.sh   # Swift Testing, 13 tests
+./scripts/test-macos.sh   # Swift Testing, 32 tests
 ```
 
 Dependencies: zero third-party — system `sqlite3` C library for storage, `URLSession` for networking, native SwiftUI for UI.
@@ -76,7 +77,7 @@ The app opens on the "热门榜" (Charts) tab: switch between recent / weekly / 
 
 **Follow series updates**
 
-Switch to the "剧集" (Series) tab, sorted by update time. Each card shows the title, up-to-episode status (amber = ongoing), Douban / IMDb ratings and resource counts; scroll to the bottom to lazy-load more.
+Switch to the "剧集" (Series) tab, sorted by **premiere date** by default (switchable to resource-update time). Cards show the title, up-to-episode status (amber = ongoing), premiere date and Douban / IMDb ratings; the filter rail offers year / airing status / genre / region; click a card for the detail sheet (synopsis, cast, episode-progress log, external links); scroll to the bottom to lazy-load more.
 
 **Tune sync & cache**
 
