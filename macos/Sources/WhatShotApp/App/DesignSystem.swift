@@ -316,6 +316,7 @@ struct GalleryCard: View {
   let video: VideoRepository.VideoRow
   var rank: Int? = nil
   var showDefinition = false
+  var showPremiere = false
   @State private var hovering = false
 
   var body: some View {
@@ -333,10 +334,32 @@ struct GalleryCard: View {
       if let episode = EpisodeStatus.parse(status: video.episodeStatus, total: video.episodes) {
         EpisodeStatusText(episode: episode)
       }
+      // 首播日：豆瓣补全的真实日期；未知不得伪造（定案 Q7），显式标注
+      if showPremiere {
+        PremiereDateText(video: video)
+      }
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .animation(.easeOut(duration: 0.18), value: hovering)
     .onHover { hovering = $0 }
+  }
+}
+
+/// 首播日一行：已知显示日期（未来日期照排，不特判）；未知显式标注，不用其他时间填充
+struct PremiereDateText: View {
+  let video: VideoRepository.VideoRow
+
+  var body: some View {
+    Group {
+      if let date = video.premiereDate {
+        Text("首播 \(date)")
+      } else {
+        Text("首播未知")
+      }
+    }
+    .font(.system(size: 10.5, weight: .medium))
+    .foregroundStyle(video.premiereDate == nil ? Theme.textTertiary : Theme.textSecondary)
+    .lineLimit(1)
   }
 }
