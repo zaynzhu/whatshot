@@ -75,10 +75,10 @@
 
 但 ai0 全部接口（列表 + 详情）**没有逐日播出数据**；`release` 只有首播日且新剧为空。验证过的外部路径：
 
-- **豆瓣 rexxar 接口**（`m.douban.com/rexxar/api/v2/tv/<douban_id>`，移动端 UA + Referer `m.douban.com/tv`，无需登录）：**有 `pubdate`**，如《飞到我心上》返回 `['2026-08-31(中国大陆)']`，与你打开的豆瓣网页一致。但豆瓣 kind 路径必须分对：`/tv/` 查老友记 404（豆瓣电影页 subject 用 `/movie/`，剧集用 `/tv/`）；WhatsNew 的 `doubanAdapter.ts` 已有同款接口的成熟用法可参考
-- **豆瓣逐集接口**（`rexxar/api/v2/tv/<id>/episodes`）：2026-09-12 实测返回空结构，**未验证通过**，待重查
+- **豆瓣 rexxar 接口**（`m.douban.com/rexxar/api/v2/tv/<douban_id>`，移动端 UA + Referer `m.douban.com/tv`，无需登录）：**有 `pubdate`**，如《飞到我心上》返回 `['2026-08-31(中国大陆)']`，与豆瓣网页一致。但豆瓣 kind 路径必须分对：老友记条目在豆瓣属电影页 subject（`/movie/2641586`），剧集用 `/tv/`； WhatsNew 的 `doubanAdapter.ts` 已有同款接口的成熟用法可参考。后续扩展验证（国产在播 11 部样本 100% 可得、years 错标实例、分集接口 404）见 [douban-premiere-date-assessment.md](douban-premiere-date-assessment.md)。**已批准接入：一期单源例外，仅限用已有 douban_id 补首播日**，边界与节奏见 [requirements.md](requirements.md) 列表筛选与首播时间线一节
+- **豆瓣逐集接口**（`rexxar/api/v2/tv/<id>/episodes`）：实测 HTTP 404（traversal_error），**不可用**；网页版分集页（`subject/<id>/episode/N`）存在但样本内"播放时间"为"暂无"且无 Cookie 访问会进 sec.douban.com 安全页——逐集日程路线已按用户澄清放弃（目标是首播日，不是逐集日）
 - **tvMaze**（WhatsNew 的播出表来源）：用本库播出中剧集的 IMDb ID 实测三部全部未收录；CN 播出表仅 30 条且多为动画——中文剧覆盖≈0，不可用
-- 由此推出可用的替代口径：本地 observations 表推导"集数更新观察日"（详见评估稿 docs/whatsnew-reuse-assessment.md §4.2）
+- ~~由此推出可用的替代口径：本地 observations 表推导"集数更新观察日"~~（**已废弃**：2026-09-13 用户澄清目标为首播日排序，观察日方案退役，仅保留在 [whatsnew-reuse-assessment.md](whatsnew-reuse-assessment.md) §4.2 作为历史评估）
 
 ## 待重查/待验证
 
