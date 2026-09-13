@@ -38,6 +38,7 @@ struct SettingsTabView: View {
             Text("站点域名经常更换时，改成新的备用域名即可；留空则自动从发布页发现官方域名")
               .font(.system(size: 11))
               .foregroundStyle(Theme.textTertiary)
+            // 状态行始终展示：无路由数据时显示"待同步"，不让用户误读成发布页故障
             if let probe = app.currentProbe {
               HStack(spacing: 6) {
                 Circle()
@@ -46,6 +47,15 @@ struct SettingsTabView: View {
                 Text("当前路由 \(URL(string: probe.baseURL)?.host ?? probe.baseURL) · \(Int(probe.latency * 1000)) ms")
                   .font(.system(size: 11).monospacedDigit())
                   .foregroundStyle(Theme.textSecondary)
+              }
+            } else {
+              HStack(spacing: 6) {
+                Circle()
+                  .fill(Theme.textTertiary)
+                  .frame(width: 5, height: 5)
+                Text("尚未同步，路由信息将在首次同步后展示")
+                  .font(.system(size: 11))
+                  .foregroundStyle(Theme.textTertiary)
               }
             }
             DomainPoolSection(
