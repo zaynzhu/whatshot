@@ -127,7 +127,10 @@ enum Schema {
     source_updated_at TEXT,
     first_seen_at INTEGER NOT NULL,    -- 本地首次入库时间戳
     last_synced_at INTEGER NOT NULL,   -- 最近一次确认时间戳
-    last_detail_at INTEGER             -- 最近一次拉详情时间戳
+    last_detail_at INTEGER,            -- 最近一次拉详情时间戳
+    premiere_date TEXT,                 -- 首播日（YYYY-MM-DD，豆瓣补全；按自然日存，不做时区换算）
+    premiere_source TEXT,              -- 首播日来源（douban）
+    premiere_fetched_at INTEGER        -- 首播日抓取时间戳
   );
   CREATE INDEX IF NOT EXISTS idx_videos_kind ON videos(kind);
   CREATE INDEX IF NOT EXISTS idx_videos_seed_updated ON videos(seed_updated_at);
@@ -165,5 +168,13 @@ enum Schema {
 
   static func migrate(_ db: SQLiteDatabase) throws {
     try db.exec(ddl)
+    // 已有库补列：premiere 三列（2026-09-13 首播时间线）。ALTER 失败（列已存在）静默容忍，幂等
+    for column in [
+      "premiere_date TEXT",
+      "premiere_source TEXT",
+      "premiere_fetched_at INTEGER"
+    ] {
+      try? db.exec("ALTER TABLE videos ADD COLUMN \(column)")
+    }
   }
 }

@@ -152,21 +152,108 @@ public struct VideoRepository: Sendable {
 
   // MARK: - 查询
 
-  /// 活跃条目列表（电影或剧集），按 seed_updated_at 降序 = 站点"最近更新"顺序
-  public func listVideos(kind: ButaiKind, limit: Int, offset: Int) async throws -> [VideoRow] {
-    try await queue.run { db in
-      let stmt = try db.prepare("""
+  /// 条目列表排序：默认资源更新（站点"最近更新"），剧集页可切首播日倒序
+  public enum ListSort: String, Sendable, CaseIterable {
+    case seedUpdated = "资源更新"
+    case premiere = "首播时间"
+  }
+
+  /// 内容筛选条件（纯本地 WHERE）。nil/空 = 不筛
+  public struct ListFilter: Sendable, Equatable {
+    public var years: String?          // 年代：复用但ai0 字典档位（2026/近三年/90年代…），本地按 years 数值映射
+    public var airingOnly: Bool         // 仅播出中（更新至X集）
+    public var classNames: String?      // 类型（单选，class_names 逗号分隔多值 LIKE 匹配）
+    public var area: String?           // 地区（production_area LIKE）
+
+    public init(years: String? = nil, airingOnly: Bool = false, classNames: String? = nil, area: String? = nil) {
+      self.years = years
+      self.airingOnly = airingOnly
+      self.classNames = classNames
+      self.area = area
+    }
+
+    public var isEmpty: Bool {
+      years == nil && !airingOnly && classNames == nil && area == nil
+    }
+  }
+
+  /// 年代档位 → 年份区间映射（对齐但ai0 字典 t3：近三年/2026…2017/20年代…更早）
+  static func yearRange(for bucket: String, now: Date = Date()) -> (low: Int, high: Int)? {
+    let calendar = Calendar(identifier: .gregorian)
+    let currentYear = calendar.component(.year, from: now)
+    func digits(_ s: String) -> Int? { Int(s.prefix(4)) }
+    if bucket == "近三年" { return (currentYear - 2, currentYear) }
+    if bucket == "更早" { return (Int.min, 1979) }
+    if let y = digits(bucket) {
+      if bucket.count == 4 { return (y, y) }                       // 2026 → 2026
+      if let suffix = bucket.split(separator: "年代").first, let decade = Int(suffix) {
+        let high = decade + 9                                       // 90年代 → 1990-1999
+        return (decade, high)
+      }
+    }
+    if bucket.hasSuffix("年代") {                                    // 20/10/00年代
+      let prefix = String(bucket.dropLast(2))
+      if let decade = Int(prefix) { return (decade * 100, decade * 100 + 9) }  // 20年代 → 2020-2029
+    }
+    return nil
+  }
+
+  /// 列表查询（分页懒加载）。排序与筛选由调用方指定。
+  /// 首播排序：日期降序（未来日期照排在前，定案 Q8）；未知日期排尾按资源更新次序（定案 Q7）
+  public func listVideos(kind: ButaiKind, limit: Int, offset: Int,
+                         sort: ListSort = .seedUpdated, filter: ListFilter = ListFilter()) async throws -> [VideoRow] {
+    // WHERE 片段构造
+    var conditions: [String] = ["kind = ?"]
+    var binds: [Any?] = [kind.rawValue]
+    if let years = filter.years, let range = Self.yearRange(for: years) {
+      conditions.append("CAST(COALESCE(years, '0') AS INTEGER) BETWEEN ? AND ?")
+      binds.append(range.low)
+      binds.append(range.high)
+    }
+    if filter.airingOnly {
+      conditions.append("episode_status LIKE '更新至%'")
+    }
+    if let cls = filter.classNames, !cls.isEmpty {
+      conditions.append("(class_names IS ? OR class_names LIKE ? OR class_names LIKE ? OR class_names LIKE ?)")
+      binds.append(cls as String?)
+      binds.append("\(cls),%")
+      binds.append("%,\(cls),%")
+      binds.append("%,\(cls)")
+    }
+    if let area = filter.area, !area.isEmpty {
+      conditions.append("production_area LIKE ?")
+      binds.append("%\(area)%")
+    }
+    let whereSQL = conditions.joined(separator: " AND ")
+    let orderSQL: String
+    switch sort {
+    case .seedUpdated:
+      orderSQL = "seed_updated_at DESC"
+    case .premiere:
+      // 首播日倒序；未知排尾，组内按资源更新稳定次序
+      orderSQL = "CASE WHEN premiere_date IS NULL THEN 1 ELSE 0 END, premiere_date DESC, seed_updated_at DESC"
+    }
+
+    return try await queue.run { db in
+      let sql = """
         SELECT id, kind, title, episode_status, episodes, seed_count, netdisk_count, douban_score,
                imdb_score, poster_url, last_synced_at,
                otitle, alias, douban_id, imdb_number, class_names, production_area,
                years, release_info, director, performer, abstract, definition,
-               seed_updated_at, source_updated_at
-        FROM videos WHERE kind = ? ORDER BY seed_updated_at DESC LIMIT ? OFFSET ?
-      """)
+               seed_updated_at, source_updated_at, premiere_date
+        FROM videos WHERE \(whereSQL) ORDER BY \(orderSQL) LIMIT ? OFFSET ?
+      """
+      let stmt = try db.prepare(sql)
       defer { sqlite3_finalize(stmt) }
-      SQLiteDatabase.bind(stmt, 1, kind.rawValue)
-      SQLiteDatabase.bind(stmt, 2, limit)
-      SQLiteDatabase.bind(stmt, 3, offset)
+      for (index, value) in binds.enumerated() {
+        if let int = value as? Int {
+          SQLiteDatabase.bind(stmt, Int32(index + 1), int)
+        } else {
+          SQLiteDatabase.bind(stmt, Int32(index + 1), value as? String)
+        }
+      }
+      SQLiteDatabase.bind(stmt, Int32(binds.count + 1), limit)
+      SQLiteDatabase.bind(stmt, Int32(binds.count + 2), offset)
       var rows: [VideoRow] = []
       while sqlite3_step(stmt) == SQLITE_ROW {
         rows.append(videoRow(stmt, db))
@@ -183,7 +270,7 @@ public struct VideoRepository: Sendable {
                imdb_score, poster_url, last_synced_at,
                otitle, alias, douban_id, imdb_number, class_names, production_area,
                years, release_info, director, performer, abstract, definition,
-               seed_updated_at, source_updated_at
+               seed_updated_at, source_updated_at, premiere_date
         FROM videos WHERE id = ?
       """)
       defer { sqlite3_finalize(stmt) }
@@ -219,6 +306,7 @@ public struct VideoRepository: Sendable {
     public var netdiskCount: Int
     public var seedUpdatedAt: String?
     public var sourceUpdatedAt: String?
+    public var premiereDate: String?
     public var lastSyncedAt: Date
   }
 
@@ -268,7 +356,7 @@ public struct VideoRepository: Sendable {
                v.netdisk_count, v.douban_score, v.imdb_score, v.poster_url, v.last_synced_at,
                v.otitle, v.alias, v.douban_id, v.imdb_number, v.class_names, v.production_area,
                v.years, v.release_info, v.director, v.performer, v.abstract, v.definition,
-               v.seed_updated_at, v.source_updated_at
+               v.seed_updated_at, v.source_updated_at, v.premiere_date
         FROM observations o JOIN videos v ON v.id = o.video_id
         WHERE o.chart_scope = ?
           AND o.observed_at = (SELECT MAX(observed_at) FROM observations WHERE chart_scope = ?)
@@ -318,6 +406,60 @@ public struct VideoRepository: Sendable {
         throw DatabaseError(message: "历史裁剪失败")
       }
       return Int(sqlite3_changes(db.handle))
+    }
+  }
+
+  // MARK: - 首播日（豆瓣补全）
+
+  /// 写入首播日。doubanId 定位条目；date 为 YYYY-MM-DD 或 nil（无日期也记录抓取过，避免反复重查）
+  public func setPremiereDate(doubanId: Int, date: String?, source: String = "douban", at: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        UPDATE videos SET premiere_date = ?, premiere_source = ?, premiere_fetched_at = ?
+        WHERE douban_id = ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, date)
+      SQLiteDatabase.bind(stmt, 2, date == nil ? nil : source)
+      SQLiteDatabase.bind(stmt, 3, Int(at.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 4, doubanId)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "首播日写入失败")
+      }
+    }
+  }
+
+  /// 待补全首播日的条目（有豆瓣 ID 且从未抓取过）。按资源更新新到旧排序，
+  /// 积压清偿由调用方按返回数量决定放大上限。
+  public func premiereCandidates(limit: Int) async throws -> [Int] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT douban_id FROM videos
+        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0 AND premiere_fetched_at IS NULL
+        ORDER BY seed_updated_at DESC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
+      SQLiteDatabase.bind(stmt, 2, limit)
+      var ids: [Int] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let id = db.int(stmt, 0) { ids.append(id) }
+      }
+      return ids
+    }
+  }
+
+  /// 未补全条目总数（判断积压清偿档位）
+  public func premierePendingCount() async throws -> Int {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT COUNT(*) FROM videos
+        WHERE kind = ? AND douban_id IS NOT NULL AND douban_id > 0 AND premiere_fetched_at IS NULL
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+      return db.int(stmt, 0) ?? 0
     }
   }
 
@@ -389,7 +531,7 @@ public struct VideoRepository: Sendable {
   /// 7 douban_score, 8 imdb_score, 9 poster_url, 10 last_synced_at,
   /// 11 otitle, 12 alias, 13 douban_id, 14 imdb_number, 15 class_names, 16 production_area,
   /// 17 years, 18 release_info, 19 director, 20 performer, 21 abstract, 22 definition,
-  /// 23 seed_updated_at, 24 source_updated_at
+  /// 23 seed_updated_at, 24 source_updated_at, 25 premiere_date
   func videoRow(_ stmt: OpaquePointer, _ db: SQLiteDatabase, offset: Int32 = 0) -> VideoRow {
     VideoRow(
       id: db.int(stmt, offset + 0) ?? 0,
@@ -416,6 +558,7 @@ public struct VideoRepository: Sendable {
       netdiskCount: db.int(stmt, offset + 6) ?? 0,
       seedUpdatedAt: db.text(stmt, offset + 23),
       sourceUpdatedAt: db.text(stmt, offset + 24),
+      premiereDate: db.text(stmt, offset + 25),
       lastSyncedAt: date(db.int(stmt, offset + 10))
     )
   }
