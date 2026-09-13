@@ -74,7 +74,9 @@ public struct SyncEngine: Sendable {
     }
   }
 
-  /// 降级候选 = 官方池 + 当前设置的自定义地址
+  /// 降级候选 = 发布页发现域 + 内置兜底池 + 当前设置的自定义地址。
+  /// 同步中途降级时不重抓发布页（AppModel 择优时已抓过，这里用兜底+自定义即可，
+  /// 换域名的紧迫场景是"冠军域名故障"，兜底池已覆盖）
   private func fallbackCandidates() async -> [String] {
     DomainPool.candidates(customBaseURL: settings.baseURL)
   }

@@ -69,8 +69,10 @@ public final class AppModel {
     syncing = true
     lastError = nil
     defer { syncing = false }
-    // 域名择优：探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
-    let candidates = DomainPool.candidates(customBaseURL: settings.baseURL)
+    // 域名择优：先抓发布页自动发现官方域名（失败静默回落内置兜底池），
+    // 再探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
+    let published = await DomainPool.fetchPublishedDomains()
+    let candidates = DomainPool.candidates(customBaseURL: settings.baseURL, published: published)
     guard let probe = await domainSelector.pickBest(candidates: candidates) else {
       lastError = "全部站点域名不可达，请检查网络或稍后重试"
       lastSummary = SyncSummary(fetchedCount: 0, changedCount: 0, detailCount: 0,

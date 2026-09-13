@@ -1,14 +1,22 @@
 import Foundation
 
-/// butai0 站点域名池：站点官方公布多个备用域名（同一数据库的不同 CDN 路由），
-/// 发布页 https://www.butailing.com/ 按路由展示各域名延迟。默认池内置全部官方域名，
-/// 用户自定义地址（settings.baseURL）作为最高优先成员进池。
-/// 站点整批更换域名家族时升级此默认池即可；二期可改为从发布页自动发现。
+/// butai0 站点域名池：站点官方公布多个备用域名（同一数据库的不同 CDN 路由）。
+/// 优先从发布页 https://www.butailing.com/ 自动发现（页面 HOSTS 数组），
+/// 内置官方池只作发布页不可达时的兜底——站点更换域名家族时不再需要改代码。
+/// 用户自定义地址（settings.baseURL）恒为最高优先成员。
 public enum DomainPool {
-  /// 站点官方公布的全部域名（2026-09-12 从发布页确认）
-  public static let officialDomains: [String] = [
+  /// 发布页地址（域名家族的官方公布处）
+  public static let publishPageURL = "https://www.butailing.com/"
+
+  /// 内置兜底池：2026-09-13 从发布页确认的全部 16 个官方域名。
+  /// 仅在发布页抓取失败时使用；新域名靠 fetchPublishedDomains 自动进池
+  public static let fallbackDomains: [String] = [
     "https://www.butai0.club",
     "https://www.butai0.com",
+    "https://www.butai0.dev",
+    "https://www.butai0.one",
+    "https://www.butai0.vip",
+    "https://www.butai0.xyz",
     "https://www.0bt0.com",
     "https://www.1bt0.com",
     "https://www.2bt0.com",
@@ -21,14 +29,59 @@ public enum DomainPool {
     "https://www.9bt0.com",
   ]
 
-  /// 组装同步用域名候选序列：自定义地址最高优先 + 去重 + 补全协议
+  /// 同步链路用别名（AppModel/SyncEngine 调用），语义不变
+  public static var officialDomains: [String] { fallbackDomains }
+
+  /// 抓发布页发现官方域名。失败（网络/解析异常/无结果）返回 nil，调用方静默回落兜底池。
+  /// 页面结构（2026-09-13 实测）：`const HOSTS = [ "www.0bt0.com", … ]`，正则抓引号内域名
+  public static func fetchPublishedDomains(session: URLSession = .shared, timeout: TimeInterval = 10) async -> [String]? {
+    guard let url = URL(string: publishPageURL) else { return nil }
+    var request = URLRequest(url: url, timeoutInterval: timeout)
+    request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+    guard let (data, response) = try? await session.data(for: request),
+          let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+      return nil
+    }
+    return parsePublishPage(String(decoding: data, as: UTF8.self))
+  }
+
+  /// 解析发布页 HTML → 规范化域名数组。HOSTS 数组外的内容不收；解析出 0 个返回 nil
+  public static func parsePublishPage(_ html: String) -> [String]? {
+    // 只在 const HOSTS = [ … ] 区间内收域名，避免把页面其他链接（统计脚本等）误入池
+    guard let hostsRange = html.range(of: "const HOSTS"),
+          let arrayStart = html.range(of: "[", range: hostsRange.upperBound..<html.endIndex) else {
+      return nil
+    }
+    let arrayEnd = html.range(of: "]", range: arrayStart.upperBound..<html.endIndex)?.lowerBound
+      ?? html.endIndex
+    guard arrayStart.upperBound <= arrayEnd else { return nil }
+    let body = html[arrayStart.upperBound..<arrayEnd]
+    // 引号内取域名样式字符串（www.xxx.tld），拒绝路径/参数/脚本片段
+    let pattern = #/"([a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})"*/#
+    var domains: [String] = []
+    for match in body.matches(of: pattern) {
+      let host = String(match.1)
+      if host.contains("butailing.com") { continue } // 发布页自身不入池
+      if let normalized = normalized(host) {
+        domains.append(normalized)
+      }
+    }
+    var seen = Set<String>()
+    let unique = domains.filter { seen.insert($0).inserted }
+    return unique.isEmpty ? nil : unique
+  }
+
+  /// 组装同步用域名候选序列：自定义地址最高优先 + 发布页发现域 + 内置兜底池，去重
   /// 输入允许带不带协议与末尾斜杠
-  public static func candidates(customBaseURL: String?) -> [String] {
+  public static func candidates(customBaseURL: String?, published: [String]? = nil) -> [String] {
     var pool: [String] = []
     if let custom = normalized(customBaseURL) {
       pool.append(custom)
     }
-    pool.append(contentsOf: officialDomains)
+    if let published, !published.isEmpty {
+      pool.append(contentsOf: published)
+    }
+    pool.append(contentsOf: fallbackDomains)
     var seen = Set<String>()
     return pool.filter { seen.insert($0).inserted }
   }

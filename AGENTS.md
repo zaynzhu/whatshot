@@ -31,7 +31,7 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 - 每个同步周期把 ejs、seed_num、评分写入本地历史表，保留"9 集→10 集"进度时间线
 - 热度口径仅 butai0 单源：热门榜 + seed_num + 豆瓣/IMDb 评分；**保留来源、榜单范围与时间窗口，不跨源混算排名**；seed_num 是站内信号，不是客观热度
 - 外部请求统一限频，同一站点连续请求间隔不低于 2 秒
-- 站点域名做池化择优（`DomainPool.swift` 内置官方 12 域名 + 用户自定义最高优先；同步前探活选路、连续失败自动降级，机制细节见 docs/requirements.md）；接口解析必须容错，字段缺失不报错；`ejs`(更新至X集/全集/空)、`episodes`(总集数, "0"=未知)、`seed_num`/`wp_num`、`doub_id`/`IMDB_number` 等字段语义见 docs/requirements.md
+- 站点域名做池化择优（`DomainPool.swift`：同步前从发布页 butailing.com 自动发现官方域名，内置兜底池仅在发布页不可达时使用；用户自定义最高优先、探活选路、连续失败自动降级，机制细节见 docs/requirements.md）；接口解析必须容错，字段缺失不报错；`ejs`(更新至X集/全集/空)、`episodes`(总集数, "0"=未知)、`seed_num`/`wp_num`、`doub_id`/`IMDB_number` 等字段语义见 docs/requirements.md
 - 种子/网盘列表需 VIP，一期不得依赖 `all_seeds` 等数据
 - 同步状态、错误只展示给用户，不把凭据/接口参数打进日志
 

@@ -28,7 +28,7 @@
 - **Douban / IMDb ratings + resource counts** -- Aggregated heat signals per card in monospaced digits
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
-- **Data-source resilience** -- built-in pool of 12 official domains with probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
+- **Data-source resilience** -- domains auto-discovered from the publish page (with a built-in fallback pool), probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
 - **Late-night gallery design** -- Dark monochrome-amber visual language, editorial typography, pure native SwiftUI
 
 ## 🚀 Quick Start
@@ -80,7 +80,7 @@ Switch to the "剧集" (Series) tab, sorted by update time. Each card shows the 
 
 **Tune sync & cache**
 
-The "设置" (Settings) tab lets you optionally pin a custom domain (highest priority when set; leave empty to use the built-in domain pool — each sync probes and picks the fastest official route, failing over automatically), tune sync frequency and the poster cache limit (300MB by default, lower or off), and shows the current route with measured latency and disk usage.
+The "设置" (Settings) tab lets you optionally pin a custom domain (highest priority when set; leave empty to use the official domain pool — each sync first discovers the latest domains from the publish page, then probes and picks the fastest official route, failing over automatically), tune sync frequency and the poster cache limit (300MB by default, lower or off), and shows the current route with measured latency and disk usage.
 
 ## 📚 Documentation
 
