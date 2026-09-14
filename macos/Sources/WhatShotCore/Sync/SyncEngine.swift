@@ -42,6 +42,9 @@ public struct SyncEngine: Sendable {
   }
   public var premiereBudget = PremiereBudget()
 
+  /// 可注入时钟（测试用），默认当前时间
+  public var clock: @Sendable () -> Date = { Date() }
+
   public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
               selector: DomainSelector? = nil, douban: DoubanClient? = nil) {
     self.client = client
@@ -81,6 +84,19 @@ public struct SyncEngine: Sendable {
     DomainPool.candidates(customBaseURL: settings.baseURL)
   }
 
+  /// 同批条目写入，返回变化条数。整批共享一个观察时间戳：
+  /// latestChart 按 scope 内 MAX(observed_at) 单秒切片，逐条各取时间跨秒会缺榜。
+  /// 任一条写库失败即抛出（库异常时后续条目也必失败，不必逐条重复报错）
+  func writeBatch(_ batch: [(video: ButaiVideo, rank: Int?)], chartScope: ButaiChartScope?, observedAt: Date) async throws -> Int {
+    var changedCount = 0
+    for item in batch {
+      if try await repo.upsert(item.video, chartScope: chartScope, chartRank: item.rank, now: observedAt) {
+        changedCount += 1
+      }
+    }
+    return changedCount
+  }
+
   /// 执行一次完整同步。每一步独立容错：单个榜/页失败不影响其他，最后汇总为 warning 或 failed
   public func run() async -> SyncSummary {
     let startedAt = Date()
@@ -97,10 +113,8 @@ public struct SyncEngine: Sendable {
           try await client.fetchChart(scope)
         }
         fetched += videos.count
-        for (index, video) in videos.enumerated() {
-          let videoChanged = (try? await repo.upsert(video, chartScope: scope, chartRank: index + 1, now: Date())) ?? false
-          if videoChanged { changed += 1 }
-        }
+        let batch = videos.enumerated().map { (video: $0.element, rank: $0.offset + 1) }
+        changed += try await writeBatch(batch, chartScope: scope, observedAt: clock())
       } catch {
         failures.append("[\(scope.label)] \(describe(error))")
       }
@@ -115,13 +129,11 @@ public struct SyncEngine: Sendable {
             try await client.fetchMovieList(mediaKind: kind, page: page)
           }
           fetched += videos.count
-          for video in videos {
-            let videoChanged = (try? await repo.upsert(video, chartScope: nil, chartRank: nil, now: Date())) ?? false
-            if videoChanged { changed += 1 }
-          }
+          let batch: [(video: ButaiVideo, rank: Int?)] = videos.map { ($0, nil) }
+          changed += try await writeBatch(batch, chartScope: nil, observedAt: clock())
         } catch {
           failures.append("[\(kind == .movie ? "电影" : "剧集")第\(page)页] \(describe(error))")
-          break // 一页失败说明站点可能异常，停止该类翻页
+          break // 一页失败说明站点或本地库异常，停止该类翻页
         }
       }
     }
@@ -137,8 +149,8 @@ public struct SyncEngine: Sendable {
             try await client.fetchDetail(id: doubanID)
           }
           // 详情接口的 tp 与站点归类矛盾（会把剧集标成电影），只补全字段不覆盖已有分类
-          _ = try? await repo.upsert(detail, chartScope: nil, chartRank: nil, now: Date(), preserveKind: true)
-          try? await repo.markDetailSynced(videoID: detail.id, at: Date())
+          _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock(), preserveKind: true)
+          try await repo.markDetailSynced(videoID: detail.id, at: clock())
           detailCount += 1
         } catch {
           failures.append("[详情\(doubanID)] \(describe(error))")
