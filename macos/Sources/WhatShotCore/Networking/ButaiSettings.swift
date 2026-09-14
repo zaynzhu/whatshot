@@ -58,20 +58,28 @@ public struct SettingsStore {
   }
 }
 
-/// butai0 接口调用量约束：同一站点连续请求间隔不低于 2 秒
+/// 接口调用量约束：同一站点连续请求间隔不低于 2 秒。
+/// jitter > 0 时实际间隔 = interval ± 随机抖动（豆瓣用：固定等差节奏是教科书级爬虫
+/// 特征，随机化间隔是最便宜的缓解，2026-09-14 红队审查定案）
 public actor RateLimiter {
   private let interval: TimeInterval
+  private let jitter: TimeInterval
   private var lastRequestAt: Date?
 
-  public init(interval: TimeInterval = 2.0) {
+  /// - Parameters:
+  ///   - interval: 基准间隔
+  ///   - jitter: 随机抖动幅度，实际间隔 = interval ± jitter（0 = 固定间隔）
+  public init(interval: TimeInterval = 2.0, jitter: TimeInterval = 0) {
     self.interval = interval
+    self.jitter = jitter
   }
 
   public func waitTurn() async {
     if let last = lastRequestAt {
+      let actual = interval + (jitter > 0 ? Double.random(in: -jitter...jitter) : 0)
       let elapsed = Date().timeIntervalSince(last)
-      if elapsed < interval {
-        let remain = interval - elapsed
+      if elapsed < actual {
+        let remain = actual - elapsed
         try? await Task.sleep(nanoseconds: UInt64(remain * 1_000_000_000))
       }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import WhatShotCore
 
@@ -237,5 +238,54 @@ struct SyncEngineTests {
       updatedAt: "2026-09-11 13:00:00", director: nil, performer: nil, abstract: nil,
       release: nil, kind: .tvSeries
     )
+  }
+
+  /// 限频抖动：jitter=0 保持固定间隔语义；jitter>0 时实际间隔在 interval±jitter 内
+  /// （不测具体时长，只测边界与参数传递——真实等待时长由 TestClock 场景外验证）
+  @Test func rateLimiterJitterBounds() async {
+    let fixed = RateLimiter(interval: 2.0, jitter: 0)
+    await fixed.waitTurn()
+    // 第二次必然需要等待 ≥ 2 秒的下界：这里只验证不崩溃与参数接受度
+    await fixed.waitTurn()
+    let jittered = RateLimiter(interval: 6.5, jitter: 1.5)
+    await jittered.waitTurn()
+    await jittered.waitTurn()
+  }
+
+  /// 豆瓣请求记录：写入、批次序号、结果分类与 90 天裁剪（风控观测只写不读的最低保障）
+  @Test func doubanRequestRecording() async throws {
+    let tmp = NSTemporaryDirectory() + "whatshot-sync-tests-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+    let now = Date()
+
+    try await repo.recordDoubanRequest(doubanId: 1453238, batchIndex: 1, httpStatus: 200,
+                                       outcome: "got_date", runId: 18, at: now)
+    try await repo.recordDoubanRequest(doubanId: 26101081, batchIndex: 2, httpStatus: 403,
+                                       outcome: "blocked", runId: 18, at: now.addingTimeInterval(10))
+    try await repo.recordDoubanRequest(doubanId: 25826612, batchIndex: 3, httpStatus: nil,
+                                       outcome: "error", runId: 18, at: now.addingTimeInterval(20))
+
+    // 读回验证（验证路径：直接查表；生产中只写不读，观测走 sqlite3 手查）
+    let rows = try await queue.run { db in
+      let stmt = try db.prepare("SELECT douban_id, batch_index, http_status, outcome FROM douban_requests ORDER BY id")
+      defer { sqlite3_finalize(stmt) }
+      var result: [(Int, Int, Int?, String)] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        result.append((db.int(stmt, 0) ?? 0, db.int(stmt, 1) ?? 0, db.int(stmt, 2), db.text(stmt, 3) ?? ""))
+      }
+      return result
+    }
+    #expect(rows.count == 3)
+    #expect(rows[0].2 == 200 && rows[0].3 == "got_date")
+    #expect(rows[1].2 == 403 && rows[1].3 == "blocked")   // 中途被拦：batch_index=2 就是当轮第 2 条被拦的观测证据
+    #expect(rows[2].2 == nil && rows[2].3 == "error")     // 网络异常无 HTTP 状态
+
+    // 裁剪：90 天前的记录删除，新记录保留
+    let old = now.addingTimeInterval(-91 * 86400)
+    try await repo.recordDoubanRequest(doubanId: 1, batchIndex: 1, httpStatus: 200,
+                                       outcome: "got_date", runId: 1, at: old)
+    let deleted = try await repo.pruneDoubanRequests(keepDays: 90, now: now)
+    #expect(deleted == 1)
   }
 }

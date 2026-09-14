@@ -22,8 +22,10 @@ public struct DoubanClient: Sendable {
   let limiter: RateLimiter
   let session: URLSession
 
-  /// 独立限频器：与 butai0 客户端各自计数，均 ≥2 秒间隔
-  public init(limiter: RateLimiter = RateLimiter(), session: URLSession = .shared) {
+  /// 独立限频器：与 butai0 客户端各自计数。
+  /// 豆瓣用 6.5±1.5 秒随机抖动（实测 2 秒等差节奏两天累计 ~195 条后触发 403 风控；
+  /// 随机化是最便宜的缓解，红队审查 2026-09-14）
+  public init(limiter: RateLimiter = RateLimiter(interval: 6.5, jitter: 1.5), session: URLSession = .shared) {
     self.limiter = limiter
     self.session = session
   }

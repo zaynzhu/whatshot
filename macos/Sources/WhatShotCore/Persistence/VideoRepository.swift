@@ -526,6 +526,42 @@ public struct VideoRepository: Sendable {
 
   // MARK: - 首播日（豆瓣补全）
 
+  /// 无条件记录一次豆瓣请求结果（风控观测：403 是时段、计数还是节奏触发，
+  /// 用真实数据回答；只写不读，90 天与 observations 同口径裁剪）
+  public func recordDoubanRequest(doubanId: Int, batchIndex: Int, httpStatus: Int?, outcome: String,
+                                  runId: Int, at date: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        INSERT INTO douban_requests (requested_at, douban_id, batch_index, http_status, outcome, run_id)
+        VALUES (?,?,?,?,?,?)
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(date.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 2, doubanId)
+      SQLiteDatabase.bind(stmt, 3, batchIndex)
+      SQLiteDatabase.bind(stmt, 4, httpStatus)
+      SQLiteDatabase.bind(stmt, 5, outcome)
+      SQLiteDatabase.bind(stmt, 6, runId)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "豆瓣请求记录写入失败")
+      }
+    }
+  }
+
+  /// 豆瓣请求记录裁剪（保留天数与 observations 一致），返回删除行数
+  public func pruneDoubanRequests(keepDays: Int, now: Date) async throws -> Int {
+    try await queue.run { db in
+      let cutoff = Int(now.timeIntervalSince1970) - keepDays * 86400
+      let stmt = try db.prepare("DELETE FROM douban_requests WHERE requested_at < ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, cutoff)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "豆瓣请求记录裁剪失败")
+      }
+      return Int(sqlite3_changes(db.handle))
+    }
+  }
+
   /// 写入首播日。doubanId 定位条目；date 为 YYYY-MM-DD 或 nil（无日期也记录抓取过，避免反复重查）
   public func setPremiereDate(doubanId: Int, date: String?, source: String = "douban", at: Date) async throws {
     try await queue.run { db in

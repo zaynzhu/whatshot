@@ -159,17 +159,19 @@ public struct SyncEngine: Sendable {
       }
     }
 
-    // 4. 历史观察裁剪（保留 90 天）
-    _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
-
     // 5. 剧集首播日豆瓣补全（一期单源例外，requirements.md 定案二/四）。
-    // 三档限速：稳态 10 / 积压>30 放宽 30 / 绝对护栏 30；豆瓣任何失败只计 warning，不阻断主同步
+    // 三档限速：稳态 10 / 积压>30 放宽 30 / 绝对护栏 30；豆瓣任何失败只计 warning，不阻断主同步。
+    // 限频 6.5±1.5s 随机抖动（2s 等差节奏两天 195 条后触发 403，红队审查 2026-09-14）
     if let douban {
-      let summary = await backfillPremieres(douban: douban)
+      let summary = await backfillPremieres(douban: douban, runId: runID)
       if let warning = summary.warning {
         failures.append(warning)
       }
     }
+
+    // 6. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
+    _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
+    _ = try? await repo.pruneDoubanRequests(keepDays: 90, now: Date())
 
     let finishedAt = Date()
     let duration = finishedAt.timeIntervalSince(startedAt)
@@ -190,29 +192,38 @@ public struct SyncEngine: Sendable {
   }
 
   /// 补全一批首播日。返回 warning（nil = 本批无异常）。
-  /// 停批规则：429 等待 Retry-After 后放弃本批；401/403/安全页立即停批——不重试不绕过
-  func backfillPremieres(douban: DoubanClient) async -> PremiereBackfillSummary {
+  /// 停批规则：429 等待 Retry-After 后放弃本批；401/403/安全页立即停批——不重试不绕过。
+  /// 每条请求无条件写 douban_requests（风控观测，只写不读）
+  func backfillPremieres(douban: DoubanClient, runId: Int = 0) async -> PremiereBackfillSummary {
     let pending = (try? await repo.premierePendingCount()) ?? 0
     guard pending > 0 else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
     let limit = pending > premiereBudget.backlogTrigger ? premiereBudget.backlogPerRun : premiereBudget.steadyPerRun
     let candidates = (try? await repo.premiereCandidates(limit: limit)) ?? []
     var withDate = 0
     var blocked: String?
-    for doubanId in candidates {
+    for (index, doubanId) in candidates.enumerated() {
       do {
         let date = try await douban.fetchPremiereDate(doubanId: doubanId)
         // 无日期也记录抓取过（premiere_fetched_at 置位），避免每轮反复重查已知无日期的条目
-        try? await repo.setPremiereDate(doubanId: doubanId, date: date, at: Date())
+        try? await repo.setPremiereDate(doubanId: doubanId, date: date, at: clock())
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 200,
+                                            outcome: date == nil ? "no_date" : "got_date", runId: runId, at: clock())
         if date != nil { withDate += 1 }
       } catch let DoubanClient.DoubanError.rateLimited(retryAfter) {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 429,
+                                            outcome: "rate_limited", runId: runId, at: clock())
         let wait = retryAfter.map { "（等待 \($0) 秒后放弃本批）" } ?? ""
         blocked = "豆瓣限流，本批补全中止\(wait)；已补 \(withDate) 部，剩余下轮继续"
         break
       } catch DoubanClient.DoubanError.blocked(let status) {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: status,
+                                            outcome: "blocked", runId: runId, at: clock())
         blocked = "豆瓣拒绝访问(HTTP \(status))，本批补全中止；已补 \(withDate) 部，剩余下轮继续"
         break
       } catch {
         // 单条网络抖动/解析异常：跳过该条继续（下一轮会重查此条）
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: nil,
+                                            outcome: "error", runId: runId, at: clock())
         continue
       }
     }

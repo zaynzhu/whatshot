@@ -160,6 +160,17 @@ enum Schema {
     error TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS douban_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requested_at INTEGER NOT NULL,      -- 请求时点
+    douban_id INTEGER NOT NULL,        -- 请求的条目
+    batch_index INTEGER,               -- 当轮第几条（1 起，探针/中途被拦的模式分析用）
+    http_status INTEGER,               -- HTTP 状态码；网络异常/解析失败为 NULL
+    outcome TEXT NOT NULL,             -- got_date/no_date/blocked/rate_limited/error
+    run_id INTEGER                     -- 所属同步轮次（0 = 非同步上下文）
+  );
+  CREATE INDEX IF NOT EXISTS idx_douban_req_time ON douban_requests(requested_at);
+
   CREATE TABLE IF NOT EXISTS settings_kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
