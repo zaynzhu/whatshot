@@ -431,9 +431,14 @@ public struct VideoRepository: Sendable {
     }
   }
 
-  /// 名次变化标记：比较同 scope 最近两个批次（latestChart 只取最新一批，批次写入
-  /// 是原子的，因此比较的两个批次都是完整提交的）。空字典 = 无上一批（首次）或名次全部未变
-  public func chartMovements(_ scope: ButaiChartScope) async throws -> [Int: ChartMovement] {
+  /// 名次变化标记：比较同 scope 最近两个已提交批次。空字典 = 无可信基线（首次同步、
+  /// 基线碎片）或名次全部未变。
+  /// 基线可信条件（评估文档 4.2 规则）：批次写入原子化保证批次完整，但历史遗留的
+  /// 逐条时间戳跨秒数据（如"27 条 + 3 条"两个时间戳）是碎片——不满员的基线
+  /// 会把缺观察误读成"本次入榜"，宁可不标也不制造假事件。
+  /// 判据：基线条数 ≥ 当前批次的 minimumBaselineRatio（默认 85%，榜单 35 条容 5 条内站点容量波动）
+  public func chartMovements(_ scope: ButaiChartScope,
+                             minimumBaselineRatio: Double = 0.85) async throws -> [Int: ChartMovement] {
     try await queue.run { db in
       let stmt = try db.prepare("""
         SELECT DISTINCT observed_at FROM observations
@@ -446,10 +451,11 @@ public struct VideoRepository: Sendable {
         batches.append(db.int(stmt, 0) ?? 0)
       }
       guard batches.count == 2 else { return [:] } // 首次同步没有基线，不制造任何变化事件
-      // 上一批：不含该作品的完整批次才有“本次入榜”依据；上一批空查询不到批次（被裁剪）则不比较
       let previous = try chartRanks(db, scope: scope, observedAt: batches[1])
-      guard !previous.isEmpty else { return [:] }
       let current = try chartRanks(db, scope: scope, observedAt: batches[0])
+      // 碎片基线不作比较依据：条数不足当前批次阈值比例视为不可信（跨秒历史/半批写入）
+      guard !current.isEmpty, !previous.isEmpty,
+            Double(previous.count) >= Double(current.count) * minimumBaselineRatio else { return [:] }
       var movements: [Int: ChartMovement] = [:]
       for (videoID, rank) in current {
         if let prevRank = previous[videoID] {

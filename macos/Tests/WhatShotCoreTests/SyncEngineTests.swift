@@ -158,7 +158,9 @@ struct SyncEngineTests {
   }
 
   /// 回归：名次变化口径（评估文档 4.2 规则）——首次同步不制造入榜；
-  /// 只比较同 scope 两个完整批次；升/降/入榜/持平各自正确
+  /// 只比较同 scope 两个完整批次；升/降/入榜/持平各自正确。
+  /// minimumBaselineRatio=0：小批次测试不受满员阈值干扰，只测比较逻辑
+  /// （满员拦截逻辑由 fragmentedBaselineDoesNotFabricateMovements 单独覆盖）
   @Test func chartMovementsRules() async throws {
     let tmp = NSTemporaryDirectory() + "whatshot-sync-tests-\(UUID().uuidString).sqlite3"
     let queue = try DatabaseQueue(path: tmp)
@@ -171,7 +173,7 @@ struct SyncEngineTests {
     _ = try await repo.upsertBatch(first, chartScope: .recent, observedAt: base)
 
     // 首批只有一批：不产生任何变化事件
-    let none = try await repo.chartMovements(.recent)
+    let none = try await repo.chartMovements(.recent, minimumBaselineRatio: 0)
     #expect(none.isEmpty)
 
     // 第二批：2 升到第 1（1 降到 2），3 持平，4 新入榜顶掉 5 之外的位置
@@ -179,7 +181,7 @@ struct SyncEngineTests {
       .enumerated().map { (video: $0.element, rank: $0.offset + 1) }
     _ = try await repo.upsertBatch(second, chartScope: .recent, observedAt: base.addingTimeInterval(3600))
 
-    let movements = try await repo.chartMovements(.recent)
+    let movements = try await repo.chartMovements(.recent, minimumBaselineRatio: 0)
     #expect(movements[2] == VideoRepository.ChartMovement(previousRank: 2, delta: 1))  // 2→1 升
     #expect(movements[1] == VideoRepository.ChartMovement(previousRank: 1, delta: -1)) // 1→2 降
     #expect(movements[3] == nil)                                                       // 3→3 持平不报
@@ -188,8 +190,42 @@ struct SyncEngineTests {
     // 混入列表观察（chart_scope NULL）不影响批次比较
     _ = try await repo.upsertBatch([(video: makeVideo(id: 9), rank: nil)], chartScope: nil,
                                    observedAt: base.addingTimeInterval(7200))
-    let afterList = try await repo.chartMovements(.recent)
+    let afterList = try await repo.chartMovements(.recent, minimumBaselineRatio: 0)
     #expect(afterList[2]?.delta == 1) // 列表观察不参与榜单批次序列，结果不变
+  }
+
+  /// 回归：碎片批次不作比较基线——旧版本逐条时间戳跨秒写入的历史（如升级前
+  /// "27 条 + 3 条"两个时间戳）不满足"上一批完整"，不得据此制造假 NEW/假升降
+  /// （评估文档 4.2："失败、不可信结果不解释成下榜/入榜"；生产库 2026-09-14 实测
+  /// 存在此类碎片，见 requirements 榜单批次一节）
+  @Test func fragmentedBaselineDoesNotFabricateMovements() async throws {
+    let tmp = NSTemporaryDirectory() + "whatshot-sync-tests-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+    // 完整旧批次：35 条（榜单标准容量）
+    let full = (1...35).map { (video: makeVideo(id: $0), rank: $0) }
+    _ = try await repo.upsertBatch(full, chartScope: .recent, observedAt: base)
+
+    // 新批次也是完整 35 条（id 重排制造真实变化），但基线完整、应当正常报变化——先验证正常路径
+    let reordered = (2...35).map { (video: makeVideo(id: $0), rank: $0 - 1) } + [(video: makeVideo(id: 1), rank: 35)]
+    _ = try await repo.upsertBatch(reordered, chartScope: .recent, observedAt: base.addingTimeInterval(3600))
+    let healthy = try await repo.chartMovements(.recent)
+    #expect(healthy[2]?.delta == 1) // 完整基线 → 正常报告升降
+
+    // 再写入碎片基线：模拟旧代码跨秒（30 条拆两个时间戳）
+    let gap = 1800
+    let fragment1 = (1...27).map { (video: makeVideo(id: 100 + $0), rank: $0) }
+    _ = try await repo.upsertBatch(fragment1, chartScope: .recent, observedAt: base.addingTimeInterval(7200))
+    let fragment2 = (28...30).map { (video: makeVideo(id: 100 + $0), rank: $0) }
+    _ = try await repo.upsertBatch(fragment2, chartScope: .recent, observedAt: base.addingTimeInterval(7201))
+
+    // 最新完整批次（35 条）跟碎片基线比较：碎片不满员，全部不标
+    let latest = (1...35).map { (video: makeVideo(id: $0), rank: $0) }
+    _ = try await repo.upsertBatch(latest, chartScope: .recent, observedAt: base.addingTimeInterval(10800))
+    let movements = try await repo.chartMovements(.recent)
+    #expect(movements.isEmpty) // 碎片基线（30/35）不可信：不制造任何 NEW/升降
   }
 
   func makeVideo(id: Int, ejs: String = "更新至9集", seed: Int = 34) -> ButaiVideo {
