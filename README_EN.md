@@ -22,7 +22,7 @@
 
 ## ✨ Features
 
-- **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title
+- **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title; each chart shows its own last-updated time and refresh status, plus per-card rank movement badges (NEW / up / down)
 - **Episode progress tracking** -- "Up to episode 9", "24 total", "Completed" as a dedicated info row with a visual progress line
 - **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout
 - **Premiere timeline** -- Series sorted by Douban premiere date (re-seeded classics no longer surface), with year / status / genre / region filters and a detail sheet (synopsis, cast, episode-progress log, Douban / IMDb links)
@@ -73,7 +73,7 @@ Dependencies: zero third-party — system `sqlite3` C library for storage, `URLS
 
 **Browse the charts**
 
-The app opens on the "热门榜" (Charts) tab: switch between recent / weekly / monthly. On wide windows the #1 title gets a hero card (rank, title, episode progress, ratings, synopsis and a progress line); the rest flow in a gallery grid.
+The app opens on the "热门榜" (Charts) tab: switch between recent / weekly / monthly. On wide windows the #1 title gets a hero card (rank, title, episode progress, ratings, synopsis and a progress line); the rest flow in a gallery grid. The header subtitle shows when this chart's data was last refreshed; if a chart failed this round it says "showing previous data" instead. Rank movement badges (NEW / ↑n / ↓n) compare two consecutive complete sync batches — the very first sync never flags everything as new.
 
 **Follow series updates**
 

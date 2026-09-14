@@ -29,6 +29,7 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 - 同步范围只做活跃内容：热门榜（近日/本周/本月 `getVideoList?sc=3/4/5`）+ 剧集/电影按更新时间排序的前几页（`getVideoMovieList`）；对 ejs/seed_num/评分变化的条目才补拉 `getVideoDetail`
 - 禁止全量拉取 2.5 万条库
 - 每个同步周期把 ejs、seed_num、评分写入本地历史表，保留"9 集→10 集"进度时间线
+- **榜单批次写入必须原子**（`upsertBatch`：一个榜单/一页一个事务、整批共享同一观察时间戳、失败整批回滚不替换旧榜；latestChart 按 MAX(observed_at) 单秒切片依赖此约束）；名次变化只比较同 scope 相邻两个已提交批次，首次同步不制造入榜事件
 - 热度口径仅 butai0 单源：热门榜 + seed_num + 豆瓣/IMDb 评分；**保留来源、榜单范围与时间窗口，不跨源混算排名**；seed_num 是站内信号，不是客观热度
 - 外部请求统一限频，同一站点连续请求间隔不低于 2 秒
 - 站点域名做池化择优（`DomainPool.swift`：同步前从发布页 butailing.com 自动发现官方域名，内置兜底池仅在发布页不可达时使用；用户自定义最高优先、探活选路、连续失败自动降级，机制细节见 docs/requirements.md）；接口解析必须容错，字段缺失不报错；`ejs`(更新至X集/全集/空)、`episodes`(总集数, "0"=未知)、`seed_num`/`wp_num`、`doub_id`/`IMDB_number` 等字段语义见 docs/requirements.md
