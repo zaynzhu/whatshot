@@ -6,6 +6,8 @@ struct ChartTabView: View {
   @Environment(AppModel.self) private var app
   @State private var scope: ButaiChartScope = .recent
   @State private var rows: [(rank: Int, video: VideoRepository.VideoRow)] = []
+  @State private var movements: [Int: VideoRepository.ChartMovement] = [:]
+  @State private var lastUpdated: Date?
   @State private var loading = false
 
   // 单元格顶对齐：电影卡（无集数行）比剧集卡矮时海报仍与邻居齐平
@@ -14,10 +16,23 @@ struct ChartTabView: View {
   /// 窗口够宽才给榜首 hero 位，窄窗退化为普通网格
   private let heroBreakpoint: CGFloat = 860
 
+  /// 分榜单新鲜度副标：全局同步成功时每榜各自的时间也要如实展示
+  /// （评估文档 4.3：某榜失败而其他步骤成功时，旧榜与新榜共存，不能笼统说"已同步"）
+  private var freshnessSubtitle: String {
+    var parts = ["热度来自站内资源数，非客观流行度 · 共 \(rows.count) 部"]
+    if let lastUpdated {
+      parts.append("本榜更新于 \(Self.timeText(lastUpdated))")
+    }
+    if let summary = app.lastSummary, !summary.refreshedScopes.contains(scope.rawValue), lastUpdated != nil {
+      parts.append("本次刷新未成功，显示上次数据")
+    }
+    return parts.joined(separator: " · ")
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       PageHeader(eyebrow: "CHART · BUTAI0", title: scope.label,
-                 subtitle: "热度来自站内资源数，非客观流行度 · 共 \(rows.count) 部") {
+                 subtitle: freshnessSubtitle) {
         HStack(spacing: 14) {
           ForEach(ButaiChartScope.allCases, id: \.self) { item in
             TextTab(title: item.label, selected: scope == item) { scope = item }
@@ -61,7 +76,7 @@ struct ChartTabView: View {
               }
               LazyVGrid(columns: columns, spacing: 18) {
                 ForEach(heroShown ? Array(rows.dropFirst()) : rows, id: \.video.id) { row in
-                  GalleryCard(video: row.video, rank: row.rank)
+                  GalleryCard(video: row.video, rank: row.rank, movement: movements[row.video.id])
                 }
               }
             }
@@ -73,6 +88,10 @@ struct ChartTabView: View {
     }
     .background(Theme.bg)
     .task(id: scope) { await reload() }
+    // 同步完成后重载：榜单数据与名次变化都可能更新
+    .onChange(of: app.lastSummary) { _, _ in
+      Task { await reload() }
+    }
   }
 
   func reload() async {
@@ -80,6 +99,16 @@ struct ChartTabView: View {
     defer { loading = false }
     guard let repo = app.repo else { return }
     rows = (try? await repo.latestChart(scope)) ?? []
+    movements = (try? await repo.chartMovements(scope)) ?? [:]
+    lastUpdated = (try? await repo.chartLastUpdated(scope)) ?? nil
+  }
+
+  /// 相对时间：两分钟内「刚刚」，两小时内带分钟，更早只给时分
+  private static func timeText(_ date: Date) -> String {
+    let seconds = Date().timeIntervalSince(date)
+    if seconds < 120 { return "刚刚" }
+    if seconds < 7200 { return "\(Int(seconds / 60)) 分钟前" }
+    return date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
   }
 }
 

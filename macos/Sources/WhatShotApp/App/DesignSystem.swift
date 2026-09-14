@@ -172,6 +172,26 @@ extension PageHeader where Trailing == EmptyView {
   }
 }
 
+/// 名次变化小标：入榜「NEW」/ 升降「↑n」「↓n」。琥珀只给入榜与上升；
+/// 下降用次级灰——色彩语义与"前三名琥珀"同一纪律：用色即信号
+struct MovementBadge: View {
+  let movement: VideoRepository.ChartMovement
+
+  private var text: String? {
+    if movement.previousRank == nil { return "NEW" }
+    guard let delta = movement.delta, delta != 0 else { return nil }
+    return delta > 0 ? "↑\(delta)" : "↓\(-delta)"
+  }
+
+  var body: some View {
+    if let text {
+      Text(text)
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .foregroundStyle(movement.previousRank == nil || movement.delta ?? 0 > 0 ? Theme.accent : Theme.textTertiary)
+    }
+  }
+}
+
 /// 名次小片：两位数编号，前三名琥珀（"前三"是唯一用色的名次信号）
 struct RankPlate: View {
   let rank: Int
@@ -311,18 +331,25 @@ struct VideoMetaLine: View {
 }
 
 /// 画廊卡：名次小片（可选）+ 海报 + 片名 + meta 行；hover 仅描边亮起
+/// movement：名次变化标记（升/降/新入榜），仅热门榜传入
 struct GalleryCard: View {
   let video: VideoRepository.VideoRow
   var rank: Int? = nil
   var showDefinition = false
   var showPremiere = false
+  var movement: VideoRepository.ChartMovement? = nil
   @State private var hovering = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       if let rank {
-        RankPlate(rank: rank)
-          .padding(.bottom, 1)
+        HStack(alignment: .center, spacing: 6) {
+          RankPlate(rank: rank)
+          if let movement {
+            MovementBadge(movement: movement)
+          }
+        }
+        .padding(.bottom, 1)
       }
       PosterImage(url: video.posterURL, hovering: hovering)
       Text(video.title.decodingHTMLEntities)
