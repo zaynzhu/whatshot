@@ -96,10 +96,18 @@ struct SyncEngineTests {
     let summary = await engine.run()
     #expect(summary.error == nil)
     #expect(summary.fetchedCount == 9) // 3 个榜 × 3 条，列表页为空
+    #expect(summary.refreshedScopes == ["3", "4", "5"]) // 全部榜单刷新成功（分榜单新鲜度依据）
 
-    let recent = try await engine.repo.latestChart(.recent)
+    let repo = engine.repo
+    let recent = try await repo.latestChart(.recent)
     #expect(recent.count == 3)
     #expect(recent.map(\.rank) == [1, 2, 3])
+    // 分榜单新鲜度：每个 scope 都有自己的批次时间
+    let recentUpdated = try await repo.chartLastUpdated(.recent)
+    let weeklyUpdated = try await repo.chartLastUpdated(.weekly)
+    #expect(recentUpdated != nil)
+    #expect(weeklyUpdated != nil)
+    #expect(recentUpdated != weeklyUpdated) // 时钟逐秒前进，不同榜批次时间不同
   }
 
   /// 回归：写库失败不得被静默吞掉——观察表写不进去时，摘要必须报错而不是"成功"
@@ -114,5 +122,84 @@ struct SyncEngineTests {
 
     let summary = await engine.run()
     #expect(summary.error != nil)
+    // 榜单批次回滚后不计入"已刷新"（分榜单新鲜度不得谎报）
+    #expect(summary.refreshedScopes.isEmpty)
+  }
+
+  /// 回归：批次事务写入——中途失败整批回滚，旧榜不被半批数据替换（评估文档 4.1
+  /// "写入失败不替换旧榜" 验收标准）
+  @Test func batchFailureRollsBackWholeBatch() async throws {
+    let tmp = NSTemporaryDirectory() + "whatshot-sync-tests-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+
+    // 先写入一批完整旧榜（rank 1-3）
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let oldBatch = [makeVideo(id: 1), makeVideo(id: 2), makeVideo(id: 3)]
+      .enumerated().map { (video: $0.element, rank: $0.offset + 1) }
+    _ = try await repo.upsertBatch(oldBatch, chartScope: .recent, observedAt: base)
+
+    // 新批次第 2 条触发失败：用触发器在 video_id=2 的观察写入时 RAISE(ABORT)
+    try await queue.run { db in
+      try db.exec("CREATE TRIGGER fail_second_obs BEFORE INSERT ON observations WHEN NEW.video_id = 2 BEGIN SELECT RAISE(ABORT, 'simulated'); END")
+    }
+
+    let newBatch = [makeVideo(id: 1, ejs: "更新至5集"), makeVideo(id: 2), makeVideo(id: 3)]
+      .enumerated().map { (video: $0.element, rank: $0.offset + 1) }
+    await #expect(throws: (any Error).self) {
+      _ = try await repo.upsertBatch(newBatch, chartScope: .recent, observedAt: base.addingTimeInterval(3600))
+    }
+
+    // 回滚验证：latestChart 仍是旧批次完整 3 条，且 id=1 的 ejs 没被半批写入污染
+    let chart = try await repo.latestChart(.recent)
+    #expect(chart.count == 3)
+    #expect(chart.map(\.rank) == [1, 2, 3])
+    #expect(chart[0].video.episodeStatus == "更新至9集") // 旧值原样保留，事务没有留下半批痕迹
+  }
+
+  /// 回归：名次变化口径（评估文档 4.2 规则）——首次同步不制造入榜；
+  /// 只比较同 scope 两个完整批次；升/降/入榜/持平各自正确
+  @Test func chartMovementsRules() async throws {
+    let tmp = NSTemporaryDirectory() + "whatshot-sync-tests-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+    // 首批：1,2,3 → 4,5（两个批次才能比较）
+    let first = [makeVideo(id: 1), makeVideo(id: 2), makeVideo(id: 3)]
+      .enumerated().map { (video: $0.element, rank: $0.offset + 1) }
+    _ = try await repo.upsertBatch(first, chartScope: .recent, observedAt: base)
+
+    // 首批只有一批：不产生任何变化事件
+    let none = try await repo.chartMovements(.recent)
+    #expect(none.isEmpty)
+
+    // 第二批：2 升到第 1（1 降到 2），3 持平，4 新入榜顶掉 5 之外的位置
+    let second = [makeVideo(id: 2), makeVideo(id: 1), makeVideo(id: 3), makeVideo(id: 4)]
+      .enumerated().map { (video: $0.element, rank: $0.offset + 1) }
+    _ = try await repo.upsertBatch(second, chartScope: .recent, observedAt: base.addingTimeInterval(3600))
+
+    let movements = try await repo.chartMovements(.recent)
+    #expect(movements[2] == VideoRepository.ChartMovement(previousRank: 2, delta: 1))  // 2→1 升
+    #expect(movements[1] == VideoRepository.ChartMovement(previousRank: 1, delta: -1)) // 1→2 降
+    #expect(movements[3] == nil)                                                       // 3→3 持平不报
+    #expect(movements[4] == VideoRepository.ChartMovement(previousRank: nil, delta: nil)) // 入榜
+
+    // 混入列表观察（chart_scope NULL）不影响批次比较
+    _ = try await repo.upsertBatch([(video: makeVideo(id: 9), rank: nil)], chartScope: nil,
+                                   observedAt: base.addingTimeInterval(7200))
+    let afterList = try await repo.chartMovements(.recent)
+    #expect(afterList[2]?.delta == 1) // 列表观察不参与榜单批次序列，结果不变
+  }
+
+  func makeVideo(id: Int, ejs: String = "更新至9集", seed: Int = 34) -> ButaiVideo {
+    ButaiVideo(
+      id: id, doubanId: 380_00000 + id, title: "测试剧集\(id)", originalTitle: nil, alias: nil,
+      episodeStatus: ejs, episodes: "10", definition: "WEB-1080P", years: "2026",
+      classNames: "剧情", productionArea: "日本", doubanScore: "8.0", imdbNumber: nil, imdbScore: nil,
+      posterURL: nil, seedCount: seed, netdiskCount: 2, seedUpdatedAt: "2026-09-11 13:00:00",
+      updatedAt: "2026-09-11 13:00:00", director: nil, performer: nil, abstract: nil,
+      release: nil, kind: .tvSeries
+    )
   }
 }

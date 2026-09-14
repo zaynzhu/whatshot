@@ -7,13 +7,17 @@ public struct SyncSummary: Sendable, Equatable {
   public var detailCount: Int
   public var durationSeconds: Double
   public var error: String?
+  /// 本次同步中成功刷新的榜单（分榜单新鲜度：成功榜与失败榜可区分）
+  public var refreshedScopes: [String]
 
-  public init(fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double, error: String? = nil) {
+  public init(fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double,
+              error: String? = nil, refreshedScopes: [String] = []) {
     self.fetchedCount = fetchedCount
     self.changedCount = changedCount
     self.detailCount = detailCount
     self.durationSeconds = durationSeconds
     self.error = error
+    self.refreshedScopes = refreshedScopes
   }
 }
 
@@ -84,19 +88,6 @@ public struct SyncEngine: Sendable {
     DomainPool.candidates(customBaseURL: settings.baseURL)
   }
 
-  /// 同批条目写入，返回变化条数。整批共享一个观察时间戳：
-  /// latestChart 按 scope 内 MAX(observed_at) 单秒切片，逐条各取时间跨秒会缺榜。
-  /// 任一条写库失败即抛出（库异常时后续条目也必失败，不必逐条重复报错）
-  func writeBatch(_ batch: [(video: ButaiVideo, rank: Int?)], chartScope: ButaiChartScope?, observedAt: Date) async throws -> Int {
-    var changedCount = 0
-    for item in batch {
-      if try await repo.upsert(item.video, chartScope: chartScope, chartRank: item.rank, now: observedAt) {
-        changedCount += 1
-      }
-    }
-    return changedCount
-  }
-
   /// 执行一次完整同步。每一步独立容错：单个榜/页失败不影响其他，最后汇总为 warning 或 failed
   public func run() async -> SyncSummary {
     let startedAt = Date()
@@ -105,8 +96,9 @@ public struct SyncEngine: Sendable {
     var changed = 0
     var detailCount = 0
     var failures: [String] = []
+    var refreshedScopes: [String] = []
 
-    // 1. 热门榜三个 scope
+    // 1. 热门榜三个 scope（每榜一个事务批次：整批共享时间戳，写失败整批回滚不替换旧榜）
     for scope in ButaiChartScope.allCases {
       do {
         let videos = try await resilientFetch(scope.label) { client in
@@ -114,7 +106,8 @@ public struct SyncEngine: Sendable {
         }
         fetched += videos.count
         let batch = videos.enumerated().map { (video: $0.element, rank: $0.offset + 1) }
-        changed += try await writeBatch(batch, chartScope: scope, observedAt: clock())
+        changed += try await repo.upsertBatch(batch, chartScope: scope, observedAt: clock())
+        refreshedScopes.append(scope.rawValue)
       } catch {
         failures.append("[\(scope.label)] \(describe(error))")
       }
@@ -130,7 +123,7 @@ public struct SyncEngine: Sendable {
           }
           fetched += videos.count
           let batch: [(video: ButaiVideo, rank: Int?)] = videos.map { ($0, nil) }
-          changed += try await writeBatch(batch, chartScope: nil, observedAt: clock())
+          changed += try await repo.upsertBatch(batch, chartScope: nil, observedAt: clock())
         } catch {
           failures.append("[\(kind == .movie ? "电影" : "剧集")第\(page)页] \(describe(error))")
           break // 一页失败说明站点或本地库异常，停止该类翻页
@@ -177,7 +170,8 @@ public struct SyncEngine: Sendable {
     if runID > 0 {
       try? await repo.finishSyncRun(id: runID, status: status, fetched: fetched, changed: changed, error: error, at: finishedAt)
     }
-    return SyncSummary(fetchedCount: fetched, changedCount: changed, detailCount: detailCount, durationSeconds: duration, error: error)
+    return SyncSummary(fetchedCount: fetched, changedCount: changed, detailCount: detailCount,
+                       durationSeconds: duration, error: error, refreshedScopes: refreshedScopes)
   }
 
   /// 首播日补全结果（供摘要展示）

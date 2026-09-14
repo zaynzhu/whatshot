@@ -15,33 +15,65 @@ public struct VideoRepository: Sendable {
   /// preserveKind=true 时保留库内已有分类（详情接口的 tp 与站点归类矛盾，不得覆盖列表来源的分类）
   public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date,
                      preserveKind: Bool = false) async throws -> Bool {
-    let nowSeconds = Int(now.timeIntervalSince1970)
-    let videoID = video.id
+    let changed = try await upsertBatch(
+      [(video: video, rank: chartRank)], chartScope: chartScope,
+      observedAt: now, preserveKind: preserveKind
+    )
+    return changed > 0
+  }
+
+  /// 事务写入一批条目（一个榜单或一页列表）。整批共享一个观察时间戳（latestChart 按
+  /// scope 内 MAX(observed_at) 单秒切片，逐条各取时间跨秒会缺榜）；任一条失败整批回滚，
+  /// 旧榜不被半批数据替换。返回发生变化的条数
+  public func upsertBatch(_ items: [(video: ButaiVideo, rank: Int?)], chartScope: ButaiChartScope?,
+                          observedAt: Date, preserveKind: Bool = false) async throws -> Int {
+    guard !items.isEmpty else { return 0 }
+    let nowSeconds = Int(observedAt.timeIntervalSince1970)
     let scopeRaw = chartScope?.rawValue
+    return try await queue.run { db in
+      try db.exec("BEGIN IMMEDIATE")
+      var committed = false
+      defer { if !committed { try? db.exec("ROLLBACK") } }
+      var changedCount = 0
+      for item in items {
+        if try writeEntry(db, video: item.video, scopeRaw: scopeRaw, chartRank: item.rank,
+                          nowSeconds: nowSeconds, preserveKind: preserveKind) {
+          changedCount += 1
+        }
+      }
+      try db.exec("COMMIT")
+      committed = true
+      return changedCount
+    }
+  }
+
+  /// 单条写入：videos upsert + 观察记录。只负责 SQL，须在已开启的事务内调用
+  private func writeEntry(_ db: SQLiteDatabase, video: ButaiVideo, scopeRaw: String?, chartRank: Int?,
+                          nowSeconds: Int, preserveKind: Bool) throws -> Bool {
+    let videoID = video.id
     let seedCount = video.seedCount
     let netdiskCount = video.netdiskCount
     let ejs = video.episodeStatus
     let douban = video.doubanScore
     let imdb = video.imdbScore
 
-    return try await queue.run { db in
-      let changed: Bool
-      // 1. 读旧值判断是否变化；defer 捕获变量值，禁止复用同一变量挂两个 defer
-      let selectStmt = try db.prepare("SELECT episode_status, seed_count, netdisk_count, douban_score, imdb_score FROM videos WHERE id = ?")
-      defer { sqlite3_finalize(selectStmt) }
-      try resetAndBind(selectStmt, videoID)
-      let previous = sqlite3_step(selectStmt) == SQLITE_ROW
-      let prevEjs = db.text(selectStmt, 0)
-      let prevSeed = db.int(selectStmt, 1)
-      let prevWp = db.int(selectStmt, 2)
-      let prevDouban = db.text(selectStmt, 3)
-      let prevImdb = db.text(selectStmt, 4)
+    let changed: Bool
+    // 1. 读旧值判断是否变化；defer 捕获变量值，禁止复用同一变量挂两个 defer
+    let selectStmt = try db.prepare("SELECT episode_status, seed_count, netdisk_count, douban_score, imdb_score FROM videos WHERE id = ?")
+    defer { sqlite3_finalize(selectStmt) }
+    try resetAndBind(selectStmt, videoID)
+    let previous = sqlite3_step(selectStmt) == SQLITE_ROW
+    let prevEjs = db.text(selectStmt, 0)
+    let prevSeed = db.int(selectStmt, 1)
+    let prevWp = db.int(selectStmt, 2)
+    let prevDouban = db.text(selectStmt, 3)
+    let prevImdb = db.text(selectStmt, 4)
 
-      changed = previous && (prevEjs != ejs || prevSeed != seedCount || prevWp != netdiskCount || prevDouban != douban || prevImdb != imdb)
+    changed = previous && (prevEjs != ejs || prevSeed != seedCount || prevWp != netdiskCount || prevDouban != douban || prevImdb != imdb)
 
-      // 2. upsert 条目；preserveKind 时分类保留库内值（详情回写场景）
-      let kindAssign = preserveKind ? "kind=videos.kind," : "kind=excluded.kind,"
-      let upsert = """
+    // 2. upsert 条目；preserveKind 时分类保留库内值（详情回写场景）
+    let kindAssign = preserveKind ? "kind=videos.kind," : "kind=excluded.kind,"
+    let upsert = """
       INSERT INTO videos (id, kind, title, otitle, alias, douban_id, imdb_number, episode_status, episodes,
         douban_score, imdb_score, poster_url, class_names, production_area, years, release_info,
         director, performer, abstract, definition, seed_count, netdisk_count, seed_updated_at, source_updated_at,
@@ -63,33 +95,32 @@ public struct VideoRepository: Sendable {
       performer=COALESCE(excluded.performer, videos.performer), abstract=COALESCE(excluded.abstract, videos.abstract), definition=COALESCE(NULLIF(excluded.definition, '@'), videos.definition),
       last_synced_at=excluded.last_synced_at
       """
-      let upsertStmt = try db.prepare(upsert)
-      defer { sqlite3_finalize(upsertStmt) }
-      bindVideo(upsertStmt, video, now: nowSeconds)
-      guard sqlite3_step(upsertStmt) == SQLITE_DONE else {
-        throw DatabaseError(message: "条目写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
-      }
+    let upsertStmt = try db.prepare(upsert)
+    defer { sqlite3_finalize(upsertStmt) }
+    bindVideo(upsertStmt, video, now: nowSeconds)
+    guard sqlite3_step(upsertStmt) == SQLITE_DONE else {
+      throw DatabaseError(message: "条目写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
+    }
 
-      let obs = """
+    let obs = """
       INSERT INTO observations (video_id, observed_at, chart_scope, chart_rank, ejs, seed_count, netdisk_count, douban_score, imdb_score)
       VALUES (?,?,?,?,?,?,?,?,?)
       """
-      let obsStmt = try db.prepare(obs)
-      defer { sqlite3_finalize(obsStmt) }
-      SQLiteDatabase.bind(obsStmt, 1, videoID)
-      SQLiteDatabase.bind(obsStmt, 2, nowSeconds)
-      SQLiteDatabase.bind(obsStmt, 3, scopeRaw)
-      SQLiteDatabase.bind(obsStmt, 4, chartRank)
-      SQLiteDatabase.bind(obsStmt, 5, ejs)
-      SQLiteDatabase.bind(obsStmt, 6, seedCount)
-      SQLiteDatabase.bind(obsStmt, 7, netdiskCount)
-      SQLiteDatabase.bind(obsStmt, 8, douban)
-      SQLiteDatabase.bind(obsStmt, 9, imdb)
-      guard sqlite3_step(obsStmt) == SQLITE_DONE else {
-        throw DatabaseError(message: "观察写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
-      }
-      return changed
+    let obsStmt = try db.prepare(obs)
+    defer { sqlite3_finalize(obsStmt) }
+    SQLiteDatabase.bind(obsStmt, 1, videoID)
+    SQLiteDatabase.bind(obsStmt, 2, nowSeconds)
+    SQLiteDatabase.bind(obsStmt, 3, scopeRaw)
+    SQLiteDatabase.bind(obsStmt, 4, chartRank)
+    SQLiteDatabase.bind(obsStmt, 5, ejs)
+    SQLiteDatabase.bind(obsStmt, 6, seedCount)
+    SQLiteDatabase.bind(obsStmt, 7, netdiskCount)
+    SQLiteDatabase.bind(obsStmt, 8, douban)
+    SQLiteDatabase.bind(obsStmt, 9, imdb)
+    guard sqlite3_step(obsStmt) == SQLITE_DONE else {
+      throw DatabaseError(message: "观察写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
     }
+    return changed
   }
 
   /// 标记条目刚拉过详情
@@ -373,6 +404,83 @@ public struct VideoRepository: Sendable {
       }
       return rows
     }
+  }
+
+  /// 某个榜最新一批观察的时间（分榜单新鲜度）。nil = 该榜还没有任何数据
+  public func chartLastUpdated(_ scope: ButaiChartScope) async throws -> Date? {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT MAX(observed_at) FROM observations WHERE chart_scope = ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, scope.rawValue)
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+      return date(db.int(stmt, 0))
+    }
+  }
+
+  /// 名次变化标记。previousRank=nil 表示本次入榜（上一批完整且确实不含该作品，
+  /// 不等于历史首次入榜）；delta=上一批名次-本批名次，正数表示上升
+  public struct ChartMovement: Sendable, Equatable {
+    public let previousRank: Int?
+    public let delta: Int?
+
+    public init(previousRank: Int?, delta: Int?) {
+      self.previousRank = previousRank
+      self.delta = delta
+    }
+  }
+
+  /// 名次变化标记：比较同 scope 最近两个批次（latestChart 只取最新一批，批次写入
+  /// 是原子的，因此比较的两个批次都是完整提交的）。空字典 = 无上一批（首次）或名次全部未变
+  public func chartMovements(_ scope: ButaiChartScope) async throws -> [Int: ChartMovement] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT DISTINCT observed_at FROM observations
+        WHERE chart_scope = ? ORDER BY observed_at DESC LIMIT 2
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, scope.rawValue)
+      var batches: [Int] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        batches.append(db.int(stmt, 0) ?? 0)
+      }
+      guard batches.count == 2 else { return [:] } // 首次同步没有基线，不制造任何变化事件
+      // 上一批：不含该作品的完整批次才有“本次入榜”依据；上一批空查询不到批次（被裁剪）则不比较
+      let previous = try chartRanks(db, scope: scope, observedAt: batches[1])
+      guard !previous.isEmpty else { return [:] }
+      let current = try chartRanks(db, scope: scope, observedAt: batches[0])
+      var movements: [Int: ChartMovement] = [:]
+      for (videoID, rank) in current {
+        if let prevRank = previous[videoID] {
+          let delta = prevRank - rank // 名次上升为正（1→3 名是升）
+          if delta != 0 {
+            movements[videoID] = ChartMovement(previousRank: prevRank, delta: delta)
+          }
+        } else {
+          movements[videoID] = ChartMovement(previousRank: nil, delta: nil) // 本次入榜：上一批完整且不含此作品
+        }
+      }
+      return movements
+    }
+  }
+
+  /// 某一批次的 video_id → 名次映射（批次内部 id 唯一，upsertBatch 原子写入保证）
+  private func chartRanks(_ db: SQLiteDatabase, scope: ButaiChartScope, observedAt: Int) throws -> [Int: Int] {
+    let stmt = try db.prepare("""
+      SELECT video_id, chart_rank FROM observations
+      WHERE chart_scope = ? AND observed_at = ?
+    """)
+    defer { sqlite3_finalize(stmt) }
+    SQLiteDatabase.bind(stmt, 1, scope.rawValue)
+    SQLiteDatabase.bind(stmt, 2, observedAt)
+    var ranks: [Int: Int] = [:]
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      if let videoID = db.int(stmt, 0), let rank = db.int(stmt, 1) {
+        ranks[videoID] = rank
+      }
+    }
+    return ranks
   }
 
   /// 需要补拉详情的条目：从未拉过详情或详情距上次超过指定小时数，按 seed_updated_at 新到旧。
