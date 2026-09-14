@@ -2,6 +2,13 @@ import Foundation
 
 /// 同步结果摘要，供 UI 展示
 public struct SyncSummary: Sendable, Equatable {
+  /// success：全部成功；warning：主数据成功但有部分步骤失败（如豆瓣 403）；
+  /// failed：一条数据都没拿到。UI 按 status 区分红色错误与琥珀提示
+  public enum Status: String, Sendable, Equatable {
+    case success, warning, failed
+  }
+
+  public var status: Status
   public var fetchedCount: Int
   public var changedCount: Int
   public var detailCount: Int
@@ -10,8 +17,9 @@ public struct SyncSummary: Sendable, Equatable {
   /// 本次同步中成功刷新的榜单（分榜单新鲜度：成功榜与失败榜可区分）
   public var refreshedScopes: [String]
 
-  public init(fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double,
+  public init(status: Status, fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double,
               error: String? = nil, refreshedScopes: [String] = []) {
+    self.status = status
     self.fetchedCount = fetchedCount
     self.changedCount = changedCount
     self.detailCount = detailCount
@@ -166,11 +174,11 @@ public struct SyncEngine: Sendable {
     let finishedAt = Date()
     let duration = finishedAt.timeIntervalSince(startedAt)
     let error = failures.isEmpty ? nil : failures.joined(separator: "；")
-    let status = failures.isEmpty ? "success" : (fetched > 0 ? "warning" : "failed")
+    let status: SyncSummary.Status = failures.isEmpty ? .success : (fetched > 0 ? .warning : .failed)
     if runID > 0 {
-      try? await repo.finishSyncRun(id: runID, status: status, fetched: fetched, changed: changed, error: error, at: finishedAt)
+      try? await repo.finishSyncRun(id: runID, status: status.rawValue, fetched: fetched, changed: changed, error: error, at: finishedAt)
     }
-    return SyncSummary(fetchedCount: fetched, changedCount: changed, detailCount: detailCount,
+    return SyncSummary(status: status, fetchedCount: fetched, changedCount: changed, detailCount: detailCount,
                        durationSeconds: duration, error: error, refreshedScopes: refreshedScopes)
   }
 

@@ -73,6 +73,12 @@ struct ContentView: View {
               .font(.system(size: 11))
               .foregroundStyle(.red.opacity(0.9))
               .help(error)
+          } else if let warning = app.lastWarning {
+            // 主数据成功、部分步骤失败（如豆瓣限流 403）：琥珀提示非错误，hover 看详情
+            Text("部分完成")
+              .font(.system(size: 11))
+              .foregroundStyle(Theme.accent)
+              .help(warning + "\n主数据已更新，失败部分下轮自动重试")
           } else if let lastSync {
             Text("已同步 \(lastSync.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))")
               .font(.system(size: 10.5).monospacedDigit())

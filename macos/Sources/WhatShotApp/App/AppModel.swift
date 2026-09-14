@@ -14,7 +14,10 @@ public final class AppModel {
 
   public private(set) var syncing = false
   public private(set) var lastSummary: SyncSummary?
+  /// 仅严重错误（failed：一条数据都没拿到）才置位，顶栏红色提示
   public private(set) var lastError: String?
+  /// warning 级问题（主数据成功，部分步骤失败如豆瓣 403），顶栏琥珀提示
+  public private(set) var lastWarning: String?
 
   private var syncTask: Task<Void, Never>?
   /// 域名择优器：跨同步轮次保持冠军记忆
@@ -70,6 +73,7 @@ public final class AppModel {
     }
     syncing = true
     lastError = nil
+    lastWarning = nil
     defer { syncing = false }
     // 域名择优：先抓发布页自动发现官方域名（失败静默回落内置兜底池），
     // 再探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
@@ -87,7 +91,7 @@ public final class AppModel {
     }
     guard let probe else {
       lastError = "全部站点域名不可达，请检查网络或稍后重试"
-      lastSummary = SyncSummary(fetchedCount: 0, changedCount: 0, detailCount: 0,
+      lastSummary = SyncSummary(status: .failed, fetchedCount: 0, changedCount: 0, detailCount: 0,
                                 durationSeconds: 0, error: lastError)
       return
     }
@@ -101,7 +105,12 @@ public final class AppModel {
     )
     let summary = await engine.run()
     lastSummary = summary
-    if let error = summary.error { lastError = error }
+    // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情
+    if summary.status == .failed {
+      lastError = summary.error
+    } else if let warning = summary.error {
+      lastWarning = warning
+    }
   }
 
   /// 挂载下一次定时同步：短促任务跑完即静默，不用长驻 timer 轮询
