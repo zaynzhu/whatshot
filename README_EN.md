@@ -29,6 +29,7 @@
 - **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
+- **Transparent sync status** -- The header status distinguishes "synced / partially completed / failed" and ages over time; click to expand a per-step breakdown (per-chart and backfill results, error details and retry notes) — minor hiccups like Douban rate-limiting no longer masquerade as failures
 - **Data-source resilience** -- domains auto-discovered from the publish page (with a built-in fallback pool), probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
 - **Late-night gallery design** -- Dark monochrome-amber visual language, editorial typography, pure native SwiftUI
 
