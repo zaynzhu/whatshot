@@ -69,21 +69,14 @@ struct ContentView: View {
             .foregroundStyle(Theme.textSecondary)
         } else {
           if let error = app.lastError {
-            Text("同步出错")
-              .font(.system(size: 11))
-              .foregroundStyle(.red.opacity(0.9))
-              .help(error)
+            statusButton(text: "同步出错", color: .red.opacity(0.9), help: error)
           } else if let warning = app.lastWarning {
-            // 主数据成功、部分步骤失败（如豆瓣限流 403）：琥珀提示非错误，hover 看详情
-            Text("部分完成")
-              .font(.system(size: 11))
-              .foregroundStyle(Theme.accent)
-              .help(warning + "\n主数据已更新，失败部分下轮自动重试")
+            // 琥珀提示带上距上次同步的相对时间：几小时前的老问题和刚发生的问题观感不同
+            let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0))" } ?? ""
+            statusButton(text: "部分完成\(ago)", color: Theme.accent,
+                         help: warning + "\n主数据已更新，失败部分下轮自动重试")
           } else if let lastSync {
-            Text("已同步 \(lastSync.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))")
-              .font(.system(size: 10.5).monospacedDigit())
-              .foregroundStyle(Theme.textTertiary)
-              .help(lastSyncSummary)
+            statusButton(text: "已同步 \(Self.relativeTime(lastSync))", color: Theme.textTertiary, help: lastSyncSummary)
           }
           OutlineButton(title: "同步", icon: "arrow.clockwise") {
             Task { await app.syncNow() }
@@ -105,5 +98,144 @@ struct ContentView: View {
   private func reloadLastSync() async {
     guard let repo = app.repo else { return }
     lastSync = (try? await repo.lastSuccessfulSync()) ?? nil
+  }
+
+  /// 状态文字做成可点击按钮：点开同步详情浮层（问题 2 的深化）
+  /// TimelineView 让相对时间每分钟自动演进（问题 1 的实时性），挂在前台视图上不产生后台定时器
+  private func statusButton(text: String, color: Color, help: String) -> some View {
+    SyncStatusButton(text: text, color: color, help: help) {
+      SyncDetailPopoverContent(summary: app.lastSummary, finishedAt: app.lastSyncFinishedAt)
+    }
+  }
+
+  /// 相对时间：随当前时刻演进（TimelineView 每分钟重算）
+  static func relativeTime(_ date: Date) -> String {
+    let seconds = date.timeIntervalSinceNow.magnitude
+    if seconds < 60 { return "刚刚" }
+    if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前" }
+    if seconds < 86400 { return "\(Int(seconds / 3600)) 小时前" }
+    return date.formatted(.dateTime.month().day().hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+  }
+}
+
+/// 顶栏状态：文字 + 下拉箭头，点击弹同步详情；TimelineView(.periodic) 每分钟驱动相对时间重绘
+private struct SyncStatusButton<Popover: View>: View {
+  let text: String
+  let color: Color
+  let help: String
+  @ViewBuilder var popover: () -> Popover
+  @State private var showDetail = false
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 60)) { _ in
+      Button {
+        showDetail.toggle()
+      } label: {
+        HStack(spacing: 4) {
+          Text(text)
+            .font(.system(size: 11).monospacedDigit())
+            .foregroundStyle(color)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(color.opacity(0.6))
+        }
+      }
+      .buttonStyle(.plain)
+      .help(help)
+      .popover(isPresented: $showDetail, arrowEdge: .bottom) {
+        popover()
+      }
+    }
+  }
+}
+
+/// 同步详情浮层：时间 + 总量 + 分步明细 + 问题说明。
+/// 深色面板与筛选浮层同一套 token（Theme.elevated + hairline 描边）
+private struct SyncDetailPopoverContent: View {
+  let summary: SyncSummary?
+  let finishedAt: Date?
+
+  private var headline: String {
+    guard let summary else { return "尚未同步" }
+    switch summary.status {
+    case .success: return "上次同步：全部成功"
+    case .warning: return "上次同步：部分完成"
+    case .failed: return "上次同步：失败"
+    }
+  }
+
+  private func outcomeIcon(_ outcome: String) -> (symbol: String, color: Color) {
+    switch outcome {
+    case "ok": return ("checkmark", Theme.accent)
+    case "partial": return ("exclamationmark.triangle", Theme.accent)
+    default: return ("xmark", .red.opacity(0.9))
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if let summary {
+        HStack(alignment: .firstTextBaseline) {
+          Text(headline)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Theme.textPrimary)
+          Spacer()
+          if let finishedAt {
+            Text(ContentView.relativeTime(finishedAt))
+              .font(.system(size: 10.5).monospacedDigit())
+              .foregroundStyle(Theme.textTertiary)
+          }
+        }
+        Text("拉取 \(summary.fetchedCount) 条 · 变化 \(summary.changedCount) 条 · 详情补拉 \(summary.detailCount) 条 · 用时 \(String(format: "%.0f", min(summary.durationSeconds, 599))) 秒")
+          .font(.system(size: 10.5).monospacedDigit())
+          .foregroundStyle(Theme.textSecondary)
+
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+
+        VStack(alignment: .leading, spacing: 6) {
+          ForEach(summary.steps) { step in
+            let icon = outcomeIcon(step.outcome)
+            HStack(spacing: 7) {
+              Image(systemName: icon.symbol)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(icon.color)
+                .frame(width: 12)
+              Text(step.label)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textPrimary)
+              Spacer()
+              if let count = step.count {
+                Text("\(count) 条")
+                  .font(.system(size: 10.5).monospacedDigit())
+                  .foregroundStyle(Theme.textSecondary)
+              }
+            }
+          }
+        }
+
+        if let error = summary.error, summary.status != .success {
+          Rectangle().fill(Theme.hairline).frame(height: 1)
+          Text(error)
+            .font(.system(size: 10.5))
+            .foregroundStyle(Theme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+          if summary.status == .warning {
+            Text("主数据已更新；失败部分不影响使用，下轮同步自动重试")
+              .font(.system(size: 10))
+              .foregroundStyle(Theme.textTertiary)
+          }
+        }
+      } else {
+        Text("尚未同步")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(Theme.textSecondary)
+        Text("点击右上角「同步」拉取热门榜与最近更新")
+          .font(.system(size: 10.5))
+          .foregroundStyle(Theme.textTertiary)
+      }
+    }
+    .padding(14)
+    .frame(width: 300, alignment: .leading)
+    .background(Theme.elevated)
   }
 }

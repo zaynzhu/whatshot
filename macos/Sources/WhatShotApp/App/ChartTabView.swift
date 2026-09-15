@@ -21,7 +21,7 @@ struct ChartTabView: View {
   private var freshnessSubtitle: String {
     var parts = ["热度来自站内资源数，非客观流行度 · 共 \(rows.count) 部"]
     if let lastUpdated {
-      parts.append("本榜更新于 \(Self.timeText(lastUpdated))")
+      parts.append("本榜更新于 \(ContentView.relativeTime(lastUpdated))")
     }
     if let summary = app.lastSummary, !summary.refreshedScopes.contains(scope.rawValue), lastUpdated != nil {
       parts.append("本次刷新未成功，显示上次数据")
@@ -101,14 +101,6 @@ struct ChartTabView: View {
     rows = (try? await repo.latestChart(scope)) ?? []
     movements = (try? await repo.chartMovements(scope)) ?? [:]
     lastUpdated = (try? await repo.chartLastUpdated(scope)) ?? nil
-  }
-
-  /// 相对时间：两分钟内「刚刚」，两小时内带分钟，更早只给时分
-  private static func timeText(_ date: Date) -> String {
-    let seconds = Date().timeIntervalSince(date)
-    if seconds < 120 { return "刚刚" }
-    if seconds < 7200 { return "\(Int(seconds / 60)) 分钟前" }
-    return date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
   }
 }
 

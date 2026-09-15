@@ -14,6 +14,8 @@ public final class AppModel {
 
   public private(set) var syncing = false
   public private(set) var lastSummary: SyncSummary?
+  /// 最近一次同步结束时间（相对时间"X 分钟前"随它演进）
+  public private(set) var lastSyncFinishedAt: Date?
   /// 仅严重错误（failed：一条数据都没拿到）才置位，顶栏红色提示
   public private(set) var lastError: String?
   /// warning 级问题（主数据成功，部分步骤失败如豆瓣 403），顶栏琥珀提示
@@ -105,6 +107,7 @@ public final class AppModel {
     )
     let summary = await engine.run()
     lastSummary = summary
+    lastSyncFinishedAt = Date()
     // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情
     if summary.status == .failed {
       lastError = summary.error

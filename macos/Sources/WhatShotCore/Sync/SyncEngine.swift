@@ -16,9 +16,11 @@ public struct SyncSummary: Sendable, Equatable {
   public var error: String?
   /// 本次同步中成功刷新的榜单（分榜单新鲜度：成功榜与失败榜可区分）
   public var refreshedScopes: [String]
+  /// 各步骤明细（同步详情浮层展示）：时间点 + 步骤 + 结果
+  public var steps: [SyncStep]
 
   public init(status: Status, fetchedCount: Int, changedCount: Int, detailCount: Int, durationSeconds: Double,
-              error: String? = nil, refreshedScopes: [String] = []) {
+              error: String? = nil, refreshedScopes: [String] = [], steps: [SyncStep] = []) {
     self.status = status
     self.fetchedCount = fetchedCount
     self.changedCount = changedCount
@@ -26,6 +28,25 @@ public struct SyncSummary: Sendable, Equatable {
     self.durationSeconds = durationSeconds
     self.error = error
     self.refreshedScopes = refreshedScopes
+    self.steps = steps
+  }
+
+  /// 单步骤记录：状态浮层里逐行展示"几点几分 · 干了什么 · 结果如何"
+  public struct SyncStep: Sendable, Equatable, Identifiable {
+    public var id: Int
+    /// 展示名（"近日热门" / "剧集第2页" / "首播日补全"）
+    public var label: String
+    /// ok=成功；partial=该步骤部分完成（豆瓣被拦但已补 N 部）；failed=整步失败
+    public var outcome: String
+    /// 补充数字（拉取条数/已补部数），失败时为 nil
+    public var count: Int?
+
+    public init(id: Int, label: String, outcome: String, count: Int? = nil) {
+      self.id = id
+      self.label = label
+      self.outcome = outcome
+      self.count = count
+    }
   }
 }
 
@@ -105,6 +126,8 @@ public struct SyncEngine: Sendable {
     var detailCount = 0
     var failures: [String] = []
     var refreshedScopes: [String] = []
+    var steps: [SyncSummary.SyncStep] = []
+    var stepID = 0
 
     // 1. 热门榜三个 scope（每榜一个事务批次：整批共享时间戳，写失败整批回滚不替换旧榜）
     for scope in ButaiChartScope.allCases {
@@ -116,31 +139,44 @@ public struct SyncEngine: Sendable {
         let batch = videos.enumerated().map { (video: $0.element, rank: $0.offset + 1) }
         changed += try await repo.upsertBatch(batch, chartScope: scope, observedAt: clock())
         refreshedScopes.append(scope.rawValue)
+        stepID += 1
+        steps.append(SyncSummary.SyncStep(id: stepID, label: scope.label, outcome: "ok", count: videos.count))
       } catch {
         failures.append("[\(scope.label)] \(describe(error))")
+        stepID += 1
+        steps.append(SyncSummary.SyncStep(id: stepID, label: scope.label, outcome: "failed"))
       }
     }
 
     // 2. 电影/剧集最近更新页
     for kind in [ButaiKind.movie, .tvSeries] {
+      let kindLabel = kind == .movie ? "电影" : "剧集"
       let pages = kind == .movie ? settings.movieListPages : settings.tvListPages
+      var kindCount = 0
+      var kindFailed = false
       for page in 1...max(1, pages) {
         do {
-          let videos = try await resilientFetch("\(kind == .movie ? "电影" : "剧集")第\(page)页") { client in
+          let videos = try await resilientFetch("\(kindLabel)第\(page)页") { client in
             try await client.fetchMovieList(mediaKind: kind, page: page)
           }
           fetched += videos.count
+          kindCount += videos.count
           let batch: [(video: ButaiVideo, rank: Int?)] = videos.map { ($0, nil) }
           changed += try await repo.upsertBatch(batch, chartScope: nil, observedAt: clock())
         } catch {
-          failures.append("[\(kind == .movie ? "电影" : "剧集")第\(page)页] \(describe(error))")
+          failures.append("[\(kindLabel)第\(page)页] \(describe(error))")
+          kindFailed = true
           break // 一页失败说明站点或本地库异常，停止该类翻页
         }
       }
+      stepID += 1
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "\(kindLabel)最近更新",
+                                        outcome: kindFailed ? "partial" : "ok", count: kindCount))
     }
 
     // 3. 变化或新条目补拉详情（导演/演员/简介/总集数），每轮上限 20 条避免单次同步过长
     // getVideoDetail 的 id 参数是豆瓣 ID（站点 idcode），不是站点内部数字 ID
+    var detailFailed = 0
     if fetched > 0 || failures.isEmpty {
       let candidates = (try? await repo.detailRefreshCandidates(limit: 20, detailStaleHours: 168)) ?? []
       for doubanID in candidates {
@@ -154,12 +190,17 @@ public struct SyncEngine: Sendable {
           try await repo.markDetailSynced(videoID: detail.id, at: clock())
           detailCount += 1
         } catch {
+          detailFailed += 1
           failures.append("[详情\(doubanID)] \(describe(error))")
         }
       }
     }
+    stepID += 1
+    steps.append(SyncSummary.SyncStep(id: stepID, label: "条目详情补拉",
+                                      outcome: detailFailed == 0 ? "ok" : "partial",
+                                      count: detailFailed == 0 ? detailCount : nil))
 
-    // 5. 剧集首播日豆瓣补全（一期单源例外，requirements.md 定案二/四）。
+    // 4. 剧集首播日豆瓣补全（一期单源例外，requirements.md 定案二/四）。
     // 三档限速：稳态 10 / 积压>30 放宽 30 / 绝对护栏 30；豆瓣任何失败只计 warning，不阻断主同步。
     // 限频 6.5±1.5s 随机抖动（2s 等差节奏两天 195 条后触发 403，红队审查 2026-09-14）
     if let douban {
@@ -167,9 +208,14 @@ public struct SyncEngine: Sendable {
       if let warning = summary.warning {
         failures.append(warning)
       }
+      stepID += 1
+      // partial = 被拦但已补一部分；no_date 不算失败，withDate 只统计拿到日期的
+      let outcome = summary.warning == nil ? "ok" : "partial"
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "首播日补全",
+                                        outcome: outcome, count: summary.withDate))
     }
 
-    // 6. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
+    // 5. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
     _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
     _ = try? await repo.pruneDoubanRequests(keepDays: 90, now: Date())
 
@@ -181,7 +227,7 @@ public struct SyncEngine: Sendable {
       try? await repo.finishSyncRun(id: runID, status: status.rawValue, fetched: fetched, changed: changed, error: error, at: finishedAt)
     }
     return SyncSummary(status: status, fetchedCount: fetched, changedCount: changed, detailCount: detailCount,
-                       durationSeconds: duration, error: error, refreshedScopes: refreshedScopes)
+                       durationSeconds: duration, error: error, refreshedScopes: refreshedScopes, steps: steps)
   }
 
   /// 首播日补全结果（供摘要展示）
