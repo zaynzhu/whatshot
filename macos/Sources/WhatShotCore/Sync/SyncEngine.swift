@@ -61,6 +61,8 @@ public struct SyncEngine: Sendable {
   let settings: ButaiSettings
   /// 豆瓣客户端可注入（测试用 mock）；默认懒建。主同步不依赖它，失败只计 warning
   public var douban: DoubanClient?
+  /// TMDB 客户端可注入（一期例外扩大，2026-09-15）；nil/未配 key 时跳过该步。失败只计 warning
+  public var tmdb: TmdbClient?
 
   /// 首播日补全三档限速（2026-09-13 实测定案，requirements.md 定案四）
   public struct PremiereBudget: Sendable {
@@ -79,12 +81,13 @@ public struct SyncEngine: Sendable {
   public var clock: @Sendable () -> Date = { Date() }
 
   public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
-              selector: DomainSelector? = nil, douban: DoubanClient? = nil) {
+              selector: DomainSelector? = nil, douban: DoubanClient? = nil, tmdb: TmdbClient? = nil) {
     self.client = client
     self.selector = selector
     self.repo = repo
     self.settings = settings
     self.douban = douban
+    self.tmdb = tmdb
   }
 
   /// 带域名降级的请求执行器：连续 2 次失败换域名重试一次
@@ -215,6 +218,20 @@ public struct SyncEngine: Sendable {
                                         outcome: outcome, count: summary.withDate))
     }
 
+    // 4b. TMDB 首播日补全（一期例外扩大，2026-09-15 定案，方案 B）。
+    // 只补有 IMDb 的剧集分季首播日；与豆瓣补的是不同子集（TMDB 走 imdb_number 身份）。
+    // 豆瓣 403 退避期间这条路径把欧美分季剧先补齐。失败只计 warning，不阻断主同步。
+    if let tmdb {
+      let summary = await backfillPremieresViaTmdb(tmdb: tmdb)
+      if let warning = summary.warning {
+        failures.append(warning)
+      }
+      stepID += 1
+      let outcome = summary.warning == nil ? "ok" : "partial"
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "TMDB 首播日",
+                                        outcome: outcome, count: summary.withDate))
+    }
+
     // 5. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
     _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
     _ = try? await repo.pruneDoubanRequests(keepDays: 90, now: Date())
@@ -270,6 +287,37 @@ public struct SyncEngine: Sendable {
         // 单条网络抖动/解析异常：跳过该条继续（下一轮会重查此条）
         try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: nil,
                                             outcome: "error", runId: runId, at: clock())
+        continue
+      }
+    }
+    return PremiereBackfillSummary(fetched: candidates.count, withDate: withDate, warning: blocked)
+  }
+
+  /// TMDB 首播日补全（方案 B）：只补有 IMDb 的剧集分季首播日。
+  /// 写库用 setPremiereByImdb——只补 premiere_date 为空的，豆瓣已写的不动。
+  /// 无匹配/季号不符的条目留空（不置 fetched 位），留豆瓣退避后重查；401（key 无效）整批停止。
+  /// 不阻断主同步，最多只在本步 warning 标注。
+  func backfillPremieresViaTmdb(tmdb: TmdbClient) async -> PremiereBackfillSummary {
+    let pending = (try? await repo.tmdbPremierePendingCount()) ?? 0
+    guard pending > 0 else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
+    let limit = pending > premiereBudget.backlogTrigger ? premiereBudget.backlogPerRun : premiereBudget.steadyPerRun
+    let candidates = (try? await repo.tmdbPremiereCandidates(limit: limit)) ?? []
+    var withDate = 0
+    var blocked: String?
+    for candidate in candidates {
+      do {
+        let premiere = try await tmdb.fetchSeasonPremiere(imdbId: candidate.imdb, title: candidate.title)
+        // 只补空不覆盖豆瓣；写入成功计数（已有豆瓣日期的返回 false 不算新增）
+        let wrote = try await repo.setPremiereByImdb(imdbNumber: candidate.imdb, date: premiere.date, at: clock())
+        if wrote { withDate += 1 }
+      } catch TmdbClient.TmdbError.unauthorized {
+        blocked = "TMDB API Key 无效(401)，本批补全中止；已补 \(withDate) 部"
+        break
+      } catch TmdbClient.TmdbError.notFound {
+        // TMDB 无此条目/季号不符：留空，等豆瓣退避后重查此条
+        continue
+      } catch {
+        // 单条网络抖动：跳过该条继续
         continue
       }
     }

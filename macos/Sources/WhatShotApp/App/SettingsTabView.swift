@@ -95,6 +95,31 @@ struct SettingsTabView: View {
           }
         }
 
+        settingCard(title: "TMDB 首播日", icon: "calendar") {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("API Key（Bearer Token）")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(Theme.textSecondary)
+            SecureField("留空则关闭 TMDB 补全", text: tmdbKeyBinding)
+              .textFieldStyle(.plain)
+              .font(.system(size: 13).monospacedDigit())
+              .padding(.horizontal, 10)
+              .padding(.vertical, 8)
+              .background(
+                RoundedRectangle(cornerRadius: Theme.radiusControl)
+                  .fill(Theme.bg)
+                  .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusControl)
+                      .stroke(Theme.hairline, lineWidth: 1)
+                  )
+              )
+              .foregroundStyle(Theme.textPrimary)
+            Text("豆瓣 403 退避期间，用 TMDB 给有 IMDb 的欧美剧集补该季首播日。Key 只存本机，不上传；注册：themoviedb.org/settings/api")
+              .font(.system(size: 11))
+              .foregroundStyle(Theme.textTertiary)
+          }
+        }
+
         settingCard(title: "缓存", icon: "internaldrive") {
           VStack(alignment: .leading, spacing: 10) {
             pickerRow(label: "海报磁盘缓存上限") {
@@ -138,6 +163,14 @@ struct SettingsTabView: View {
       draft = app.settings
       refreshDiskUsage()
     }
+  }
+
+  /// TMDB key 绑定：Optional<String> 映射为空串显示，空白去空格后存 nil（关闭补全）
+  private var tmdbKeyBinding: Binding<String> {
+    Binding(
+      get: { draft.tmdbApiKey ?? "" },
+      set: { draft.tmdbApiKey = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0.trimmingCharacters(in: .whitespaces) }
+    )
   }
 
   /// 磁盘占用行：海报缓存 + 数据库分项，合计附 1px 细进度线（缓存/上限比值，关闭上限时不画）

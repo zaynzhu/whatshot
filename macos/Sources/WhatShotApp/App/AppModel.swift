@@ -98,12 +98,15 @@ public final class AppModel {
       return
     }
     currentProbe = probe
+    // TMDB 补全可选：配了 key 才注入（一期例外扩大，2026-09-15）；豆瓣 403 退避期补有 IMDb 的欧美剧集
+    let tmdb = settings.tmdbApiKey.map { TmdbClient(apiKey: $0) }
     let engine = SyncEngine(
       client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
       settings: settings,
       selector: domainSelector,
-      douban: DoubanClient() // 独立限频器，与 butai0 各自计数
+      douban: DoubanClient(), // 独立限频器，与 butai0 各自计数
+      tmdb: tmdb
     )
     let summary = await engine.run()
     lastSummary = summary

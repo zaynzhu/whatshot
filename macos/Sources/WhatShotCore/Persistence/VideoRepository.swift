@@ -272,7 +272,7 @@ public struct VideoRepository: Sendable {
                imdb_score, poster_url, last_synced_at,
                otitle, alias, douban_id, imdb_number, class_names, production_area,
                years, release_info, director, performer, abstract, definition,
-               seed_updated_at, source_updated_at, premiere_date
+               seed_updated_at, source_updated_at, premiere_date, premiere_source
         FROM videos WHERE \(whereSQL) ORDER BY \(orderSQL) LIMIT ? OFFSET ?
       """
       let stmt = try db.prepare(sql)
@@ -302,7 +302,7 @@ public struct VideoRepository: Sendable {
                imdb_score, poster_url, last_synced_at,
                otitle, alias, douban_id, imdb_number, class_names, production_area,
                years, release_info, director, performer, abstract, definition,
-               seed_updated_at, source_updated_at, premiere_date
+               seed_updated_at, source_updated_at, premiere_date, premiere_source
         FROM videos WHERE id = ?
       """)
       defer { sqlite3_finalize(stmt) }
@@ -339,6 +339,8 @@ public struct VideoRepository: Sendable {
     public var seedUpdatedAt: String?
     public var sourceUpdatedAt: String?
     public var premiereDate: String?
+    /// 首播日来源：douban / tmdb，错配可按 source 反查回滚
+    public var premiereSource: String?
     public var lastSyncedAt: Date
   }
 
@@ -388,7 +390,7 @@ public struct VideoRepository: Sendable {
                v.netdisk_count, v.douban_score, v.imdb_score, v.poster_url, v.last_synced_at,
                v.otitle, v.alias, v.douban_id, v.imdb_number, v.class_names, v.production_area,
                v.years, v.release_info, v.director, v.performer, v.abstract, v.definition,
-               v.seed_updated_at, v.source_updated_at, v.premiere_date
+               v.seed_updated_at, v.source_updated_at, v.premiere_date, v.premiere_source
         FROM observations o JOIN videos v ON v.id = o.video_id
         WHERE o.chart_scope = ?
           AND o.observed_at = (SELECT MAX(observed_at) FROM observations WHERE chart_scope = ?)
@@ -580,6 +582,78 @@ public struct VideoRepository: Sendable {
     }
   }
 
+  /// 用 IMDb 号写入 TMDB 分季首播日（一期例外扩大，2026-09-15）。
+  /// 与豆瓣路径分源：只在 premiere_date 为空时补，永不覆盖豆瓣已有值；source 记 'tmdb' 可反查回滚。
+  /// 返回是否实际写入（已有日期则不改，返回 false）。date 必须非空（无日期不写库、不置 fetched 位，
+  /// 让该条留在豆瓣重查队列里等豆瓣退避）。
+  @discardableResult
+  public func setPremiereByImdb(imdbNumber: String, date: String, source: String = "tmdb", at: Date) async throws -> Bool {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        UPDATE videos SET premiere_date = ?, premiere_source = ?, premiere_fetched_at = ?
+        WHERE imdb_number = ? AND premiere_date IS NULL
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, date)
+      SQLiteDatabase.bind(stmt, 2, source)
+      SQLiteDatabase.bind(stmt, 3, Int(at.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 4, imdbNumber)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "TMDB 首播日写入失败")
+      }
+      return sqlite3_changes(db.handle) > 0
+    }
+  }
+
+  /// TMDB 补全候选：有 IMDb 号且仍无首播日的剧集。与豆瓣 douban_id 候选是两套身份，
+  /// 豆瓣退避期间这条路径把有 IMDb 的欧美分季剧先补齐。返回 imdb + 标题（系列级命中时解析季号用）。
+  public func tmdbPremiereCandidates(limit: Int) async throws -> [(imdb: String, title: String)] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT imdb_number, title FROM videos
+        WHERE kind = ? AND premiere_date IS NULL
+          AND imdb_number IS NOT NULL AND imdb_number LIKE 'tt%'
+        ORDER BY seed_updated_at DESC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
+      SQLiteDatabase.bind(stmt, 2, limit)
+      var rows: [(imdb: String, title: String)] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let imdb = db.text(stmt, 0), let title = db.text(stmt, 1) {
+          rows.append((imdb: imdb, title: title))
+        }
+      }
+      return rows
+    }
+  }
+
+  /// TMDB 待补条目总数（有 IMDb、无日期），决定本批规模
+  public func tmdbPremierePendingCount() async throws -> Int {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT COUNT(*) FROM videos
+        WHERE kind = ? AND premiere_date IS NULL
+          AND imdb_number IS NOT NULL AND imdb_number LIKE 'tt%'
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, ButaiKind.tvSeries.rawValue)
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+      return db.int(stmt, 0) ?? 0
+    }
+  }
+
+  /// 按内部 id 查首播日与来源（测试/回查用）
+  public func premiereInfo(videoID id: Int) async throws -> (date: String?, source: String?)? {
+    try await queue.run { db in
+      let stmt = try db.prepare("SELECT premiere_date, premiere_source FROM videos WHERE id = ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, id)
+      guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+      return (date: db.text(stmt, 0), source: db.text(stmt, 1))
+    }
+  }
+
   /// 待补全首播日的条目：从未抓取，或无日期且距上次抓取超过 recheckHours（豆瓣日期可能后来补上，
   /// 放开地区白名单后需给旧数据重查机会；有日期的条目不重查）。按资源更新新到旧排序，
   /// 积压清偿由调用方按返回数量决定放大上限。
@@ -719,6 +793,7 @@ public struct VideoRepository: Sendable {
       seedUpdatedAt: db.text(stmt, offset + 23),
       sourceUpdatedAt: db.text(stmt, offset + 24),
       premiereDate: db.text(stmt, offset + 25),
+      premiereSource: db.text(stmt, offset + 26),
       lastSyncedAt: date(db.int(stmt, offset + 10))
     )
   }

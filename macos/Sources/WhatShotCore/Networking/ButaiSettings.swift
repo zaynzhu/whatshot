@@ -16,22 +16,27 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
   public var movieListPages: Int
   /// 剧集列表抓取页数（每页 25 条）
   public var tvListPages: Int
+  /// TMDB Bearer（v4 read token）。一期例外扩大到第二个外部源（2026-09-15 定案）：
+  /// 只补有 IMDb 的剧集分季首播日。nil/空 = 关闭 TMDB 补全。只存本地 settings.json，不进 git。
+  public var tmdbApiKey: String?
 
   public static let `default` = ButaiSettings(
     baseURL: "https://www.butai0.club",
     syncIntervalHours: 6,
     posterCacheLimitMB: 300,
     movieListPages: 3,
-    tvListPages: 3
+    tvListPages: 3,
+    tmdbApiKey: nil
   )
 
-  public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int) {
+  public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int, tmdbApiKey: String? = nil) {
     self.baseURL = baseURL
     self.pinnedDomain = pinnedDomain
     self.syncIntervalHours = syncIntervalHours
     self.posterCacheLimitMB = posterCacheLimitMB
     self.movieListPages = movieListPages
     self.tvListPages = tvListPages
+    self.tmdbApiKey = tmdbApiKey
   }
 }
 
