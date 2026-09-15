@@ -25,7 +25,7 @@
 - **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title; each chart shows its own last-updated time and refresh status, plus per-card rank movement badges (NEW / up / down)
 - **Episode progress tracking** -- "Up to episode 9", "24 total", "Completed" as a dedicated info row with a visual progress line
 - **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout
-- **Premiere timeline** -- Series sorted by Douban premiere date (re-seeded classics no longer surface), with year / status / genre / region filters and a detail sheet (synopsis, cast, episode-progress log, Douban / IMDb links)
+- **Premiere timeline** -- Series sorted by premiere date (re-seeded classics no longer surface), with year / status / genre / region filters and a detail sheet (synopsis, cast, episode-progress log, Douban / IMDb links). **Dual-source premiere backfill**: Douban fills premiere dates via existing douban_id (no key needed); when Douban is rate-limited, an optional TMDB fallback fills the per-season premiere date for Western series that have an IMDb ID (never overwrites a Douban-written date; requires a TMDB Bearer Token in Settings)
 - **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off

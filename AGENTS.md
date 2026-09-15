@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期主数据源；**唯一例外：豆瓣 rexxar 接口仅限用库内 douban_id 补首播日**（剧集页首播排序依赖，取值口径"全都要取最早"，见 docs/requirements.md）。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
+WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期主数据源。**首播日有两个收窄的补全源，都只补首播日**（剧集页首播排序依赖）：① 豆瓣 rexxar 接口按库内 douban_id 直连补（取值口径"全都要取最早"）；② TMDB 兜底——豆瓣限流时给有 IMDb 号的剧集补**该季**首播日（不是系列 first_air_date；按 imdb_id 直连不标题搜索；只补空不覆盖豆瓣已写日期）。两个源都不得做标题搜索、不补评分/简介/海报/逐集，机制细节见 docs/requirements.md 定案二/五。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
 
 一期明确不做：资源搜索（二期）、NAS 后端（架构已定为纯本地）、多源热度叠加（二期）。
 
