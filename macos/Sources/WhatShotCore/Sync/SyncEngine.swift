@@ -64,12 +64,15 @@ public struct SyncEngine: Sendable {
   /// TMDB 客户端可注入（一期例外扩大，2026-09-15）；nil/未配 key 时跳过该步。失败只计 warning
   public var tmdb: TmdbClient?
 
-  /// 首播日补全三档限速（2026-09-13 实测定案，requirements.md 定案四）
+  /// 首播日补全三档限速（2026-09-13 实测定案；2026-09-15 稳态 10→12，requirements.md 定案四）
   public struct PremiereBudget: Sendable {
-    public var steadyPerRun: Int      // 稳态：每周期最多 10 条
+    /// 稳态：每周期最多 12 条。
+    /// 实测 403 拦在第 13/14 条（douban_requests 观测 2026-09-15，触线约 13~14），
+    /// 12 条贴触线下方留一条缝：比 10 快一点，又不顶风控。保守起见不超 13。
+    public var steadyPerRun: Int
     public var backlogTrigger: Int    // 积压阈值：> 30 未补全
     public var backlogPerRun: Int     // 积压清偿：放宽到 30 条
-    public init(steadyPerRun: Int = 10, backlogTrigger: Int = 30, backlogPerRun: Int = 30) {
+    public init(steadyPerRun: Int = 12, backlogTrigger: Int = 30, backlogPerRun: Int = 30) {
       self.steadyPerRun = steadyPerRun
       self.backlogTrigger = backlogTrigger
       self.backlogPerRun = backlogPerRun
@@ -300,7 +303,10 @@ public struct SyncEngine: Sendable {
   func backfillPremieresViaTmdb(tmdb: TmdbClient) async -> PremiereBackfillSummary {
     let pending = (try? await repo.tmdbPremierePendingCount()) ?? 0
     guard pending > 0 else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
-    let limit = pending > premiereBudget.backlogTrigger ? premiereBudget.backlogPerRun : premiereBudget.steadyPerRun
+    // TMDB 一轮扫完所有待补（2026-09-15 用户定案）：官方限流宽松（约每秒几十次），
+    // 不复用豆瓣的三档小步限速——豆瓣用 12 条是防它的 403 计数器，TMDB 没这回事，
+    // 且有 IMDb 的条目量小（实测 25 部），一轮补完避免欧美剧跨好几轮才齐
+    let limit = pending
     let candidates = (try? await repo.tmdbPremiereCandidates(limit: limit)) ?? []
     var withDate = 0
     var blocked: String?
