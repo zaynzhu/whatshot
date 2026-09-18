@@ -45,14 +45,35 @@ public struct S3Client: Sendable {
     return "\(endpoint)/\(bucket)/\(key)"
   }
 
-  /// HEAD 探测对象是否已存在（桶里已有的图不重复上传）
-  public func exists(key: String) async -> Bool {
-    do {
-      _ = try await request(method: "HEAD", key: key)
-      return true
-    } catch {
-      return false
+  /// 建桶（PutBucket）。桶已存在（409 BucketAlreadyOwnedByYou/BucketAlreadyExists）视为成功——
+  /// 幂等，重复调用无害。管理面建桶和 API 建桶等价，首次部署用哪个都行
+  public func createBucket() async throws {
+    // us-east-1 可省略 LocationConstraint（省略即代表该 region）；其他 region 需带 body
+    let body: Data?
+    if region == "us-east-1" {
+      body = nil
+    } else {
+      body = Data("<CreateBucketConfiguration><LocationConstraint>\(region)</LocationConstraint></CreateBucketConfiguration>".utf8)
     }
+    let response = try await request(method: "PUT", key: "", body: body)
+    switch response.statusCode {
+    case 200..<300:
+      return
+    case 409:
+      return // 桶已存在：幂等成功
+    case 401, 403:
+      throw S3Error.unauthorized
+    default:
+      throw S3Error.invalidResponse("建桶失败 HTTP \(response.statusCode)")
+    }
+  }
+
+  /// HEAD 探测对象是否已存在（桶里已有的图不重复上传）。
+  /// request() 对非 2xx 不抛（401/403 之外原样返回），必须显式查 200——
+  /// 首版只看"未抛异常"，HEAD 404 被误判存在跳过 PUT（2026-09-18 实测事故）
+  public func exists(key: String) async -> Bool {
+    guard let response = try? await request(method: "HEAD", key: key) else { return false }
+    return response.statusCode == 200
   }
 
   /// PUT 上传。401/403 抛 unauthorized（调用方停批）；桶不存在等其他 4xx/5xx 抛 invalidResponse
@@ -74,7 +95,8 @@ public struct S3Client: Sendable {
       throw S3Error.invalidResponse("URL 构造失败")
     }
     let amzDate = Self.amzDateFormat(Date())
-    let dateStamp = String(amzDate.dropLast(7))   // yyyyMMdd
+    // amzDate = yyyyMMdd'T'HHmmss'Z'（16 字符），日期段 = 去掉 'T'+6 位时间+'Z' 共 8 字符
+    let dateStamp = String(amzDate.dropLast(8))   // yyyyMMdd
     // path-style：canonical URI 含桶名
     let canonicalURI = "/\(bucket)/\(Self.uriEncode(key))"
     // payload hash：无 body 用空串 hash，PUT 用 body 的 SHA256
@@ -144,7 +166,7 @@ public struct S3Client: Sendable {
     return k.map { String(format: "%02x", $0) }.joined()
   }
 
-  /// SigV4 时间戳：yyyyMMdd'T'HHmmss'Z'（UTC）
+  /// SigV4 时间戳：yyyyMMdd'T'HHmmss'Z'（UTC）。dateStamp 派生用 dropLast(9)（T+HHmmss+Z 共 8 字符）
   static func amzDateFormat(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"

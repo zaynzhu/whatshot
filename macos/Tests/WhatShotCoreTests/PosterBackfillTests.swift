@@ -222,14 +222,26 @@ struct PosterBackfillTests {
     #expect(S3Client.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
   }
 
+  /// dateStamp 派生：amzDate 去掉 'T'+HHmmss+'Z' 共 8 字符（首版 dropLast(7) 漏 T，RustFS 报
+  /// invalid header——2026-09-18 实测事故）
+  @Test func s3DateStampDerivation() {
+    let amzDate = S3Client.amzDateFormat(Date(timeIntervalSince1970: 1_789_700_000))
+    #expect(amzDate.count == 16)
+    let dateStamp = String(amzDate.dropLast(8))
+    #expect(dateStamp.count == 8)
+    #expect(!dateStamp.contains("T"))
+  }
+
   /// URI 编码：斜杠保留（key 层级），空格编码为 %20，字母数字 -._~ 保留
   @Test func s3UriEncode() {
     #expect(S3Client.uriEncode("posters/123.jpg") == "posters/123.jpg")
     #expect(S3Client.uriEncode("a b.png") == "a%20b.png")
   }
 
-  /// 镜像全链路（stub）：HEAD 404 → PUT 200 → 返回桶 URL
+  /// 镜像全链路（stub）：HEAD 404 → PUT 200 → 返回桶 URL。
+  /// 断言 PUT 确实发生（exists 误判"已存在"会静默跳过上传，2026-09-18 实测事故）
   final class S3StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var seenMethods: [String] = []
     static func makeSession() -> URLSession {
       let config = URLSessionConfiguration.ephemeral
       config.protocolClasses = [S3StubURLProtocol.self]
@@ -242,6 +254,7 @@ struct PosterBackfillTests {
         client?.urlProtocol(self, didFailWithError: URLError(.badURL))
         return
       }
+      Self.seenMethods.append(method)
       let status: Int
       if method == "HEAD" { status = 404 }        // 不存在 → 走 PUT
       else if method == "PUT" { status = 200 }
@@ -260,11 +273,48 @@ struct PosterBackfillTests {
   }
 
   @Test func s3MirrorUploadsAndReturnsBucketURL() async throws {
+    S3StubURLProtocol.seenMethods = []
     let client = S3Client(endpoint: "http://192.168.1.10:9000", bucket: "whatshot-posters",
                           accessKey: "AKIA_TEST", secretKey: "SECRET_TEST",
                           session: S3StubURLProtocol.makeSession())
     let imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
     let url = try await client.mirror(data: imageData, contentType: "image/jpeg", key: "posters/93973.jpg")
     #expect(url == "http://192.168.1.10:9000/whatshot-posters/posters/93973.jpg")
+    #expect(S3StubURLProtocol.seenMethods == ["HEAD", "PUT"]) // HEAD 404 → 必须真正 PUT
+  }
+
+  /// 建桶幂等：200 与 409（已存在）都算成功
+  final class S3CreateBucketStubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var responseStatus = 200
+    static func makeSession() -> URLSession {
+      let config = URLSessionConfiguration.ephemeral
+      config.protocolClasses = [S3CreateBucketStubURLProtocol.self]
+      return URLSession(configuration: config)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+      guard let url = request.url else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+        return
+      }
+      guard let response = HTTPURLResponse(url: url, statusCode: Self.responseStatus, httpVersion: nil, headerFields: nil) else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+        return
+      }
+      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+      client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+  }
+
+  @Test func s3CreateBucketIdempotent() async throws {
+    let client = S3Client(endpoint: "http://192.168.1.10:9000", bucket: "whatshot-posters",
+                          accessKey: "AKIA_TEST", secretKey: "SECRET_TEST",
+                          session: S3CreateBucketStubURLProtocol.makeSession())
+    S3CreateBucketStubURLProtocol.responseStatus = 200
+    try await client.createBucket()
+    S3CreateBucketStubURLProtocol.responseStatus = 409
+    try await client.createBucket() // 已存在：不抛
   }
 }
