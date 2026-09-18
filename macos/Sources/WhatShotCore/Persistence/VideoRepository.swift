@@ -89,7 +89,10 @@ public struct VideoRepository: Sendable {
       seed_count=CASE WHEN excluded.seed_count > 0 THEN excluded.seed_count ELSE videos.seed_count END,
       netdisk_count=CASE WHEN excluded.netdisk_count > 0 THEN excluded.netdisk_count ELSE videos.netdisk_count END,
       seed_updated_at=COALESCE(excluded.seed_updated_at, videos.seed_updated_at),
-      poster_url=COALESCE(excluded.poster_url, videos.poster_url),
+      poster_url=CASE
+        WHEN excluded.poster_url IS NULL THEN videos.poster_url
+        WHEN excluded.poster_url LIKE '%localhost%' THEN videos.poster_url
+        ELSE excluded.poster_url END,
       class_names=COALESCE(excluded.class_names, videos.class_names), production_area=COALESCE(excluded.production_area, videos.production_area),
       years=COALESCE(excluded.years, videos.years), release_info=COALESCE(excluded.release_info, videos.release_info), director=COALESCE(excluded.director, videos.director),
       performer=COALESCE(excluded.performer, videos.performer), abstract=COALESCE(excluded.abstract, videos.abstract), definition=COALESCE(NULLIF(excluded.definition, '@'), videos.definition),
@@ -694,6 +697,55 @@ public struct VideoRepository: Sendable {
       SQLiteDatabase.bind(stmt, 2, threshold)
       guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
       return db.int(stmt, 0) ?? 0
+    }
+  }
+
+  // MARK: - 海报兜底（2026-09-18，站方 localhost/http 事故条目的外源补图）
+
+  /// 海报兜底候选：站方 URL 缺失、指向 localhost（站方发布事故，永不可达）、
+  /// 或 http 明文（被 macOS ATS 静默拦截）。有外源海报 URL 的条目不算兜底失败，
+  /// 因此只看 poster_url 形态，不另设"已尝试"标记——写库即出队。
+  /// 返回 (id, doubanId, imdbNumber, kind)；有 imdb 走 TMDB，否则走豆瓣。
+  public func posterBackfillCandidates(limit: Int) async throws -> [(id: Int, doubanId: Int?, imdb: String?, kind: ButaiKind)] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT id, douban_id, imdb_number, kind FROM videos
+        WHERE poster_url IS NULL OR poster_url = ''
+           OR poster_url LIKE '%localhost%'
+           OR poster_url LIKE 'http://%'
+        ORDER BY seed_updated_at DESC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, limit)
+      var rows: [(id: Int, doubanId: Int?, imdb: String?, kind: ButaiKind)] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        let kindValue = db.int(stmt, 3) ?? 1
+        rows.append((id: db.int(stmt, 0) ?? 0,
+                     doubanId: db.int(stmt, 1),
+                     imdb: db.text(stmt, 2),
+                     kind: ButaiKind(rawValue: kindValue) ?? .movie))
+      }
+      return rows
+    }
+  }
+
+  /// 写入兜底海报 URL。只在现有 poster_url 仍为空/localhost/http 时写（站方中途修好给真 URL
+  /// 则尊重站方），成功返回 true。豆瓣 URL 需带 Referer 才能下载，存库原样保留
+  @discardableResult
+  public func setPosterBackfill(videoID: Int, url: String, at: Date) async throws -> Bool {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        UPDATE videos SET poster_url = ?
+        WHERE id = ? AND (poster_url IS NULL OR poster_url = ''
+          OR poster_url LIKE '%localhost%' OR poster_url LIKE 'http://%')
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, url)
+      SQLiteDatabase.bind(stmt, 2, videoID)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "兜底海报写入失败")
+      }
+      return sqlite3_changes(db.handle) > 0
     }
   }
 

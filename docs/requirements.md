@@ -170,6 +170,16 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 - **API Key 只存本地** settings.json（Application Support），不进 git、不上传、不打日志；未配 key 则跳过该步
 - **不引入 OMDb**（CC BY-NC 非商业协议 + 仅镜像 IMDb 对国剧零增量，2026-09-15 审查排除）；52 部无 IMDb 的国漫/国产剧/日韩剧 TMDB 覆盖不如豆瓣，仍靠豆瓣退避后慢补，TMDB 不作标题搜索兜底
 
+### 定案六：海报兜底——站方 localhost/http 事故条目从 TMDB/豆瓣补图（2026-09-18）
+
+**背景（实测 2026-09-18，生产库）**：butai0 站方给部分条目（存量 70 条且新条目持续出现）挂的海报 URL 是 `http://localhost:3000/...`（站方发布事故，永不可达）；另有 124 条 `http://` 明文 URL 被 macOS ATS 静默拦截（图本身活着，App 内发不出请求）。用户确认设计不改（海报懒加载+缓存到底是对的），但要求"没图的自己去别处找图"。
+
+- **兜底路由**：候选 = `poster_url` 为空 / 含 localhost / http 明文的条目。有 IMDb → TMDB `/find`（三种命中桶：movie_results/tv_results 直接带 poster_path；tv_episode_results 经 show_id 二跳 `/tv/{id}`）；其余有豆瓣 ID → 豆瓣 rexxar `pic.large`（`/tv/` 404 回退 `/movie/`——库内 kind 与豆瓣 kind 不一致实测存在，如"因果报应"）
+- **写库口径**：直接写 `poster_url`（不加新列），只在现有值仍为坏 URL（空/localhost/http）时写；**upsert 同步防回滚**——站方再发 localhost 不覆盖已兜底的真 URL，站方修好给好 URL 则尊重站方
+- **豆瓣图床防盗链**：doubanio 无 Referer 返回 HTTP 418（实测），PosterLoader 对 `*doubanio.com` 域名补 Referer + 桌面 UA
+- **限频护栏**：豆瓣路径沿用 6.5±1.5s 抖动 + 每轮 ≤30 条（PosterBudget）+ douban_requests 观测表（outcome=poster_got/poster_404）；TMDB 一轮扫完（官方限流宽松）。失败只计 warning 不阻断主同步
+- **不做**：标题搜索建身份（错配红线不变）、不覆盖站方好 URL、不为 mvinfo.homes 加 ATS 全局明文例外
+
 ### 定案三：剧集页排序与日期安置（Q6-Q8，用户拍板）
 
 - **剧集页默认排序改为首播日倒序**；"资源更新"降为可切换选项（找资源场景仍有价值）。电影页保持资源更新排序不动（电影上映日语义与 years 基本重合，butai0 release 老电影已有值，豆瓣补全收益低，二期再看）

@@ -80,6 +80,24 @@ public struct TmdbClient: Sendable {
     throw TmdbError.notFound
   }
 
+  /// 海报兜底（2026-09-18）：按 IMDb 号取剧集/电影海报的 TMDB 路径（w500 前完整 poster_path，
+  /// 如 /abc.jpg——拼接 image.tmdb.org/t/p/w500 使用）。返回 nil = TMDB 无此条目或无海报。
+  /// 三种命中桶分路：movie_results/tv_results 直接带 poster_path；
+  /// tv_episode_results（butai0 挂的多为单集条目）取 show_id 二跳 /tv/{id} 拿剧集级海报。
+  public func fetchPosterPath(imdbId: String) async throws -> String? {
+    let (data, _) = try await get("/find/\(imdbId)?external_source=imdb_id&language=zh-CN")
+    if let path = Self.firstPosterPath(from: data, key: "movie_results")
+      ?? Self.firstPosterPath(from: data, key: "tv_results") {
+      return path
+    }
+    if let showId = Self.firstEpisode(from: data)?.showId {
+      let (showData, status) = try await get("/tv/\(showId)?language=zh-CN")
+      if status == 404 { return nil }
+      return Self.firstPosterPath(from: showData, key: nil)
+    }
+    return nil
+  }
+
   /// /tv/{show_id}/season/{N}：取该季首播日；该季不存在返回 nil
   private func fetchSeasonAirDate(showId: Int, season: Int) async throws -> String? {
     let (data, status) = try await get("/tv/\(showId)/season/\(season)?language=zh-CN")
@@ -153,6 +171,25 @@ public struct TmdbClient: Sendable {
       return nil
     }
     return normalizeDate(first["first_air_date"] as? String)
+  }
+
+  /// 取 JSON 对象/数组首项的 poster_path（/abc.jpg 形态）。key 非 nil 时在指定数组里找，
+  /// nil 时把整个 JSON 当对象找（/tv/{id} 详情响应）。路径必须以 / 开头且含文件名，防脏数据
+  static func firstPosterPath(from data: Data, key: String?) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    let candidates: [[String: Any]]
+    if let key {
+      guard let list = json[key] as? [[String: Any]] else { return nil }
+      candidates = list
+    } else {
+      candidates = [json]
+    }
+    for item in candidates {
+      if let path = item["poster_path"] as? String, path.hasPrefix("/"), path.count > 4 {
+        return path
+      }
+    }
+    return nil
   }
 
   /// 中文/英文季号解析（对齐 userscript getSeasonNumber + parseChineseNumber）。

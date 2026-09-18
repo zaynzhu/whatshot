@@ -235,6 +235,31 @@ public struct SyncEngine: Sendable {
                                         outcome: outcome, count: summary.withDate))
     }
 
+    // 4c. 海报兜底（2026-09-18）：站方 localhost/http 事故条目补图。
+    // 有 IMDb 走 TMDB（官方图床无防盗链）；其余有豆瓣 ID 走豆瓣 rexxar（pic 字段，
+    // doubanio 图床下载需 Referer——PosterLoader 按域名加头）。只补坏 URL 不覆盖好 URL；
+    // 豆瓣路径沿用首播日护栏（每轮 ≤30）与观测表，TMDB 一轮扫完。失败只计 warning。
+    if let tmdb {
+      let summary = await backfillPostersViaTmdb(tmdb: tmdb)
+      if let warning = summary.warning {
+        failures.append(warning)
+      }
+      stepID += 1
+      let outcome = summary.warning == nil ? "ok" : "partial"
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "TMDB 海报兜底",
+                                        outcome: outcome, count: summary.withDate))
+    }
+    if let douban {
+      let summary = await backfillPostersViaDouban(douban: douban, runId: runID)
+      if let warning = summary.warning {
+        failures.append(warning)
+      }
+      stepID += 1
+      let outcome = summary.warning == nil ? "ok" : "partial"
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "豆瓣海报兜底",
+                                        outcome: outcome, count: summary.withDate))
+    }
+
     // 5. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
     _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
     _ = try? await repo.pruneDoubanRequests(keepDays: 90, now: Date())
@@ -328,6 +353,83 @@ public struct SyncEngine: Sendable {
       }
     }
     return PremiereBackfillSummary(fetched: candidates.count, withDate: withDate, warning: blocked)
+  }
+
+  /// 海报兜底常量：豆瓣路径每轮上限（与首播日护栏同值，防两步叠加拖长同步）。
+  /// 候选为站方事故条目，存量有限（首查 70 条），稳态随新入库条目增长
+  public struct PosterBudget: Sendable {
+    public var doubanPerRun: Int
+    public init(doubanPerRun: Int = 30) {
+      self.doubanPerRun = doubanPerRun
+    }
+  }
+  public var posterBudget = PosterBudget()
+
+  /// TMDB 海报兜底：对候选里带 IMDb 的条目取 poster_path，拼 w500 URL 写库。
+  /// 写库只补坏 URL（空/localhost/http），站方中途修好则跳过；无匹配留待下轮豆瓣路径
+  func backfillPostersViaTmdb(tmdb: TmdbClient) async -> PremiereBackfillSummary {
+    let candidates = (try? await repo.posterBackfillCandidates(limit: 200)) ?? []
+    let withImdb = candidates.filter { let imdb = $0.imdb; return imdb != nil && imdb?.hasPrefix("tt") == true }
+    guard !withImdb.isEmpty else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
+    var withDate = 0
+    var blocked: String?
+    for candidate in withImdb {
+      guard let imdb = candidate.imdb else { continue }
+      do {
+        guard let path = try await tmdb.fetchPosterPath(imdbId: imdb) else { continue }
+        let url = "https://image.tmdb.org/t/p/w500\(path)"
+        let wrote = try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock())
+        if wrote { withDate += 1 }
+      } catch TmdbClient.TmdbError.unauthorized {
+        blocked = "TMDB API Key 无效(401)，海报兜底中止；已补 \(withDate) 条"
+        break
+      } catch {
+        continue // 单条抖动跳过，下轮重试
+      }
+    }
+    return PremiereBackfillSummary(fetched: withImdb.count, withDate: withDate, warning: blocked)
+  }
+
+  /// 豆瓣海报兜底：对候选里无 IMDb（TMDB 够不着）但有豆瓣 ID 的条目，取 rexxar pic.large 写库。
+  /// tv 路径 404 回退 movie（库内 kind 与豆瓣 kind 不一致实测存在）；每轮 ≤ posterBudget 上限，
+  /// 请求写 douban_requests 观测表（outcome=poster_got/poster_404），403/429 停批不绕过
+  func backfillPostersViaDouban(douban: DoubanClient, runId: Int = 0) async -> PremiereBackfillSummary {
+    let candidates = (try? await repo.posterBackfillCandidates(limit: 200)) ?? []
+    let needDouban = candidates.filter { ($0.imdb == nil || $0.imdb?.hasPrefix("tt") != true) && $0.doubanId != nil && $0.doubanId! > 0 }
+    guard !needDouban.isEmpty else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
+    var withDate = 0
+    var blocked: String?
+    for (index, candidate) in needDouban.prefix(posterBudget.doubanPerRun).enumerated() {
+      guard let doubanId = candidate.doubanId else { continue }
+      do {
+        guard let url = try await douban.fetchPosterPath(doubanId: doubanId) else {
+          try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 404,
+                                              outcome: "poster_404", runId: runId, at: clock())
+          continue
+        }
+        if try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock()) {
+          withDate += 1
+        }
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 200,
+                                            outcome: "poster_got", runId: runId, at: clock())
+      } catch let DoubanClient.DoubanError.rateLimited(retryAfter) {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 429,
+                                            outcome: "rate_limited", runId: runId, at: clock())
+        let wait = retryAfter.map { "（等待 \($0) 秒后放弃本批）" } ?? ""
+        blocked = "豆瓣限流，海报兜底中止\(wait)；已补 \(withDate) 条，剩余下轮继续"
+        break
+      } catch DoubanClient.DoubanError.blocked(let status) {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: status,
+                                            outcome: "blocked", runId: runId, at: clock())
+        blocked = "豆瓣拒绝访问(HTTP \(status))，海报兜底中止；已补 \(withDate) 条，剩余下轮继续"
+        break
+      } catch {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: nil,
+                                            outcome: "error", runId: runId, at: clock())
+        continue
+      }
+    }
+    return PremiereBackfillSummary(fetched: needDouban.count, withDate: withDate, warning: blocked)
   }
 
   func describe(_ error: Error) -> String {

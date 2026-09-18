@@ -61,6 +61,59 @@ public struct DoubanClient: Sendable {
     return Self.parsePremiereDate(from: data)
   }
 
+  /// 海报兜底（2026-09-18）：取豆瓣海报大图 URL（pic.large，doubanio 域名，下载需 Referer）。
+  /// 库内 kind 与豆瓣 kind 不一致实测存在（因果报应库内 kind=电影 但 /tv/ 404），
+  /// 先试 /tv/ 再回退 /movie/；两路都 404 返回 nil。首播日与海报共用同一限频器
+  public func fetchPosterPath(doubanId: Int) async throws -> String? {
+    if let path = try await fetchPosterPath(doubanId: doubanId, kindPath: "tv") {
+      return path
+    }
+    return try await fetchPosterPath(doubanId: doubanId, kindPath: "movie")
+  }
+
+  private func fetchPosterPath(doubanId: Int, kindPath: String) async throws -> String? {
+    await limiter.waitTurn()
+    guard let url = URL(string: "\(Self.baseURL)/\(kindPath)/\(doubanId)") else {
+      throw DoubanError.invalidResponse("URL 构造失败")
+    }
+    var request = URLRequest(url: url, timeoutInterval: 20)
+    for (key, value) in Self.requestHeaders {
+      request.setValue(value, forHTTPHeaderField: key)
+    }
+    let (data, response) = try await session.data(for: request)
+    guard let http = response as? HTTPURLResponse else {
+      throw DoubanError.invalidResponse("响应不是 HTTP")
+    }
+    switch http.statusCode {
+    case 200..<300:
+      break
+    case 429:
+      let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+      throw DoubanError.rateLimited(retryAfter: retryAfter)
+    case 401, 403:
+      throw DoubanError.blocked(status: http.statusCode)
+    default:
+      // 404 = 豆瓣该 kind 无此条目，不算失败（调用方会回退另一路径）
+      if http.statusCode == 404 { return nil }
+      throw DoubanError.invalidResponse("HTTP \(http.statusCode)")
+    }
+    return Self.parsePosterPath(from: data)
+  }
+
+  /// 解析 pic.large（完整大图 URL）。pic 可能是对象（rexxar v2）或字符串，都兼容；
+  /// 非 doubanio 域名不收（只兜豆瓣图）
+  public static func parsePosterPath(from data: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    let raw: String?
+    if let pic = json["pic"] as? [String: Any] {
+      raw = pic["large"] as? String ?? pic["normal"] as? String
+    } else {
+      raw = json["pic"] as? String
+    }
+    guard let url = raw, url.hasPrefix("http"), url.contains("doubanio.com") else { return nil }
+    return url
+  }
+
   /// 解析 pubdate：收集所有完整 YYYY-MM-DD 日期（不分地区），取最早的一个 = 真实首播日
   /// （2026-09-13 用户定案"全都要"：地区白名单与优先级都不要）。
   /// 仅年份/无完整日期不补假日期（不把仅年份补成 1-1），按自然日存。

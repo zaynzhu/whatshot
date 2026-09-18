@@ -38,7 +38,13 @@ final class PosterLoader: @unchecked Sendable {
       return image
     }
     // 网络拉取：海报走独立并发通道，不占用接口限频额度（不同主机不同服务）
-    guard let (data, response) = try? await URLSession.shared.data(from: url),
+    // doubanio 有防盗链：无 Referer 返回 HTTP 418（实测 2026-09-18），按域名补豆瓣 Referer
+    var request = URLRequest(url: url, timeoutInterval: 20)
+    if url.host?.hasSuffix("doubanio.com") == true {
+      request.setValue("https://movie.douban.com/", forHTTPHeaderField: "Referer")
+      request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+    }
+    guard let (data, response) = try? await URLSession.shared.data(for: request),
           let http = response as? HTTPURLResponse,
           (200..<300).contains(http.statusCode),
           let image = NSImage(data: data) else {
