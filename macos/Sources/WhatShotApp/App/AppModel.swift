@@ -100,13 +100,20 @@ public final class AppModel {
     currentProbe = probe
     // TMDB 补全可选：配了 key 才注入（一期例外扩大，2026-09-15）；豆瓣 403 退避期补有 IMDb 的欧美剧集
     let tmdb = settings.tmdbApiKey.map { TmdbClient(apiKey: $0) }
+    // S3 镜像可选（2026-09-18 海报镜像定案）：四项配置齐全才注入；NAS 只做哑存储
+    var s3: S3Client?
+    if settings.s3MirrorEnabled, let endpoint = settings.s3Endpoint, let bucket = settings.s3Bucket,
+       let access = settings.s3AccessKey, let secret = settings.s3SecretKey {
+      s3 = S3Client(endpoint: endpoint, bucket: bucket, accessKey: access, secretKey: secret)
+    }
     let engine = SyncEngine(
       client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
       settings: settings,
       selector: domainSelector,
       douban: DoubanClient(), // 独立限频器，与 butai0 各自计数
-      tmdb: tmdb
+      tmdb: tmdb,
+      s3: s3
     )
     let summary = await engine.run()
     lastSummary = summary

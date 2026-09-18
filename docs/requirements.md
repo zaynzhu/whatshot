@@ -179,6 +179,10 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 - **豆瓣图床防盗链**：doubanio 无 Referer 返回 HTTP 418（实测），PosterLoader 对 `*doubanio.com` 域名补 Referer + 桌面 UA
 - **限频护栏**：豆瓣路径沿用 6.5±1.5s 抖动 + 每轮 ≤30 条（PosterBudget）+ douban_requests 观测表（outcome=poster_got/poster_404）；TMDB 一轮扫完（官方限流宽松）。失败只计 warning 不阻断主同步
 - **不做**：标题搜索建身份（错配红线不变）、不覆盖站方好 URL、不为 mvinfo.homes 加 ATS 全局明文例外
+- **S3 海报镜像（2026-09-18 用户定案，同日实施）**：站方图床整体迁移到 `img.mvinfo.homes` 且只配 http（443 无证书，TLS 握手失败；旧 tu.mvinfo 的 https 还活着但站方已改写全部条目 URL，不可达）——**http 将是常态**，海报获取改为"App 侧搬运"：兜底取到的外源图（TMDB w500 / 豆瓣 pic.large，均 https）先镜像到用户自有 S3 兼容桶（RustFS/MinIO，NAS 哑存储，不跑任何服务），`poster_url` 写桶 URL。用户 NAS（极空间）无法跑抓取脚本，故镜像由 App 完成——App 只拉 https 外源图再 PUT 进桶，不触碰站方 http 图床
+  - **ATS 合规**：桶端点为局域网 http（如 `http://192.168.1.10:9000`）时由 Info.plist `NSAllowsLocalNetworking` 豁免——Apple 官方 ATS 例外，仅放行本地网络（RFC1918 私有 IP / .local），**不为任何第三方域开明文例外**；站方 http 图床继续一律不请求
+  - **S3Client**：SigV4 签名（CryptoKit HMAC-SHA256，零第三方依赖；签名原语已与 Python 独立实现对拍一致），path-style 寻址；mirror = HEAD 探测已存在则跳过 → PUT 上传；401/403 当批停止，桶暂不可达（NAS 关机）降级直写外源 URL 不阻断
+  - **配置**：settings.json 四项（endpoint/bucket/accessKey/secretKey，只存本地不进 git），设置页"S3 海报镜像"卡片；任一为空 = 关闭镜像，兜底直写外源 URL（豆瓣图需 Referer，PosterLoader 已按域名处理）
 
 ### 定案三：剧集页排序与日期安置（Q6-Q8，用户拍板）
 

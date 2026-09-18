@@ -19,6 +19,22 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
   /// TMDB Bearer（v4 read token）。一期例外扩大到第二个外部源（2026-09-15 定案）：
   /// 只补有 IMDb 的剧集分季首播日。nil/空 = 关闭 TMDB 补全。只存本地 settings.json，不进 git。
   public var tmdbApiKey: String?
+  /// S3 兼容存储（RustFS/MinIO，2026-09-18 海报镜像定案）：站方图床明文 http（ATS 不可请求）
+  /// 时，App 从豆瓣/TMDB 取图镜像到自有桶，海报走桶 URL。NAS 只做哑存储。
+  /// endpoint 如 http://192.168.1.10:9000（局域网 http 由 NSAllowsLocalNetworking 豁免）。
+  /// 任一字段为空 = 关闭镜像，海报兜底直写外源 URL
+  public var s3Endpoint: String?
+  public var s3Bucket: String?
+  public var s3AccessKey: String?
+  public var s3SecretKey: String?
+
+  /// S3 镜像是否启用（四项配置齐全才开）
+  public var s3MirrorEnabled: Bool {
+    [s3Endpoint, s3Bucket, s3AccessKey, s3SecretKey].allSatisfy {
+      guard let value = $0?.trimmingCharacters(in: .whitespaces) else { return false }
+      return !value.isEmpty
+    }
+  }
 
   public static let `default` = ButaiSettings(
     baseURL: "https://www.butai0.club",
@@ -26,10 +42,12 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
     posterCacheLimitMB: 300,
     movieListPages: 3,
     tvListPages: 3,
-    tmdbApiKey: nil
+    tmdbApiKey: nil,
+    s3Endpoint: nil, s3Bucket: nil, s3AccessKey: nil, s3SecretKey: nil
   )
 
-  public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int, tmdbApiKey: String? = nil) {
+  public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int, tmdbApiKey: String? = nil,
+              s3Endpoint: String? = nil, s3Bucket: String? = nil, s3AccessKey: String? = nil, s3SecretKey: String? = nil) {
     self.baseURL = baseURL
     self.pinnedDomain = pinnedDomain
     self.syncIntervalHours = syncIntervalHours
@@ -37,6 +55,10 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
     self.movieListPages = movieListPages
     self.tvListPages = tvListPages
     self.tmdbApiKey = tmdbApiKey
+    self.s3Endpoint = s3Endpoint
+    self.s3Bucket = s3Bucket
+    self.s3AccessKey = s3AccessKey
+    self.s3SecretKey = s3SecretKey
   }
 }
 

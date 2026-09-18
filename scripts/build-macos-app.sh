@@ -41,6 +41,10 @@ plutil -insert CFBundleVersion -string 1 "$INFO_PLIST"
 plutil -insert LSApplicationCategoryType -string public.app-category.entertainment "$INFO_PLIST"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$INFO_PLIST"
 plutil -insert NSHighResolutionCapable -bool true "$INFO_PLIST"
+# 局域网豁免（Apple 官方 ATS 例外场景）：S3 桶跑在 NAS 局域网 http 端点（如
+# http://192.168.1.10:9000），NSAllowsLocalNetworking 只放行本地网络
+# （RFC1918 私有 IP / .local），不豁免任何第三方域的明文 http
+plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking": true}' "$INFO_PLIST"
 
 codesign --force --deep --sign - "$STAGING_APP"
 codesign --verify --deep --strict "$STAGING_APP"

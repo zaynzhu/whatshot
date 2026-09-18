@@ -120,6 +120,28 @@ struct SettingsTabView: View {
           }
         }
 
+        settingCard(title: "S3 海报镜像", icon: "externaldrive.badge.icloud") {
+          VStack(alignment: .leading, spacing: 8) {
+            s3FieldRow(label: "端点", placeholder: "http://192.168.1.10:9000", text: s3EndpointBinding)
+            HStack(spacing: 10) {
+              s3FieldRow(label: "桶名", placeholder: "whatshot-posters", text: s3BucketBinding)
+              s3FieldRow(label: "Access Key", placeholder: "", text: s3AccessKeyBinding)
+            }
+            SecureField("Secret Key（留空则关闭镜像）", text: s3SecretKeyBinding)
+              .textFieldStyle(.plain)
+              .font(.system(size: 13).monospacedDigit())
+              .padding(.horizontal, 10)
+              .padding(.vertical, 8)
+              .background(fieldBackground)
+              .foregroundStyle(Theme.textPrimary)
+            Text(draft.s3MirrorEnabled
+                 ? "已启用：海报兜底取到的图会镜像到你的桶，海报改走桶地址（站方图床是明文 http，App 拉不到）"
+                 : "站方图床现为明文 http，App 拉不到图。配置 S3 兼容存储（RustFS/MinIO）后，兜底海报先镜像到桶再展示；四项全填才启用。凭据只存本机")
+              .font(.system(size: 11))
+              .foregroundStyle(Theme.textTertiary)
+          }
+        }
+
         settingCard(title: "缓存", icon: "internaldrive") {
           VStack(alignment: .leading, spacing: 10) {
             pickerRow(label: "海报磁盘缓存上限") {
@@ -171,6 +193,44 @@ struct SettingsTabView: View {
       get: { draft.tmdbApiKey ?? "" },
       set: { draft.tmdbApiKey = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0.trimmingCharacters(in: .whitespaces) }
     )
+  }
+
+  // S3 镜像配置绑定：同 TMDB key 的空串↔nil 映射
+  private func s3Binding(_ keyPath: WritableKeyPath<ButaiSettings, String?>) -> Binding<String> {
+    Binding(
+      get: { draft[keyPath: keyPath] ?? "" },
+      set: { draft[keyPath: keyPath] = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0.trimmingCharacters(in: .whitespaces) }
+    )
+  }
+  private var s3EndpointBinding: Binding<String> { s3Binding(\.s3Endpoint) }
+  private var s3BucketBinding: Binding<String> { s3Binding(\.s3Bucket) }
+  private var s3AccessKeyBinding: Binding<String> { s3Binding(\.s3AccessKey) }
+  private var s3SecretKeyBinding: Binding<String> { s3Binding(\.s3SecretKey) }
+
+  /// S3 卡片输入行：标签 + 输入框横排
+  private func s3FieldRow(label: String, placeholder: String, text: Binding<String>) -> some View {
+    HStack(spacing: 10) {
+      Text(label)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(Theme.textSecondary)
+        .frame(width: 62, alignment: .leading)
+      TextField(placeholder, text: text)
+        .textFieldStyle(.plain)
+        .font(.system(size: 13).monospacedDigit())
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(fieldBackground)
+        .foregroundStyle(Theme.textPrimary)
+    }
+  }
+
+  private var fieldBackground: some View {
+    RoundedRectangle(cornerRadius: Theme.radiusControl)
+      .fill(Theme.bg)
+      .overlay(
+        RoundedRectangle(cornerRadius: Theme.radiusControl)
+          .stroke(Theme.hairline, lineWidth: 1)
+      )
   }
 
   /// 磁盘占用行：海报缓存 + 数据库分项，合计附 1px 细进度线（缓存/上限比值，关闭上限时不画）

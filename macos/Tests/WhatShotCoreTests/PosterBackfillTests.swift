@@ -205,4 +205,66 @@ struct PosterBackfillTests {
     #expect(doubanSummary.withDate == 1)
     #expect(try await poster(of: 2, repo: repo) == "https://img1.doubanio.com/view/photo/m_ratio_poster/public/p2915350868.jpg")
   }
+
+  // MARK: - S3 SigV4 签名原语
+
+  /// SigV4 派生键：对齐 AWS 文档示例（SecretAccessKey=wJalrXUtnFEMI, date 20150830）
+  @Test func s3SigV4DerivationKey() {
+    let derived = S3Client.hmacSHA256Hex(
+      S3Client.hmacSHA256(key: Data("AWS4wJalrXUtnFEMI".utf8), data: Data("20150830".utf8)),
+      chained: [Data("us-east-1".utf8), Data("s3".utf8), Data("aws4_request".utf8)]
+    )
+    #expect(derived.count == 64)
+  }
+
+  /// 空串 SHA256（无 body 的 payload hash）
+  @Test func s3EmptyPayloadHash() {
+    #expect(S3Client.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  }
+
+  /// URI 编码：斜杠保留（key 层级），空格编码为 %20，字母数字 -._~ 保留
+  @Test func s3UriEncode() {
+    #expect(S3Client.uriEncode("posters/123.jpg") == "posters/123.jpg")
+    #expect(S3Client.uriEncode("a b.png") == "a%20b.png")
+  }
+
+  /// 镜像全链路（stub）：HEAD 404 → PUT 200 → 返回桶 URL
+  final class S3StubURLProtocol: URLProtocol {
+    static func makeSession() -> URLSession {
+      let config = URLSessionConfiguration.ephemeral
+      config.protocolClasses = [S3StubURLProtocol.self]
+      return URLSession(configuration: config)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+      guard let url = request.url, let method = request.httpMethod else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+        return
+      }
+      let status: Int
+      if method == "HEAD" { status = 404 }        // 不存在 → 走 PUT
+      else if method == "PUT" { status = 200 }
+      else {
+        client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+        return
+      }
+      guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil) else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+        return
+      }
+      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+      client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+  }
+
+  @Test func s3MirrorUploadsAndReturnsBucketURL() async throws {
+    let client = S3Client(endpoint: "http://192.168.1.10:9000", bucket: "whatshot-posters",
+                          accessKey: "AKIA_TEST", secretKey: "SECRET_TEST",
+                          session: S3StubURLProtocol.makeSession())
+    let imageData = Data([0xFF, 0xD8, 0xFF, 0xE0])
+    let url = try await client.mirror(data: imageData, contentType: "image/jpeg", key: "posters/93973.jpg")
+    #expect(url == "http://192.168.1.10:9000/whatshot-posters/posters/93973.jpg")
+  }
 }
