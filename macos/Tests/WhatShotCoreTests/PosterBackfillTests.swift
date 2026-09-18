@@ -123,6 +123,12 @@ struct PosterBackfillTests {
     #expect(DoubanClient.parsePosterPath(from: Data(json.utf8)) == nil)
   }
 
+  /// ATS 红线：http 明文 doubanio URL 一律不收（macOS 默认策略禁明文，不豁免）
+  @Test func parseRejectsPlaintextHttpDoubanio() {
+    let json = #"{"pic":{"large":"http://img1.doubanio.com/view/photo/m_ratio_poster/public/p1.jpg"}}"#
+    #expect(DoubanClient.parsePosterPath(from: Data(json.utf8)) == nil)
+  }
+
   // MARK: - 引擎兜底步骤（URLProtocol stub 全链路）
 
   /// TMDB + 豆瓣 stub：/find 回 movie 命中，/tv/ 404 回 movie 的 pic.large

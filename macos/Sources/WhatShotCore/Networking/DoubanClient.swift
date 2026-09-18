@@ -101,7 +101,7 @@ public struct DoubanClient: Sendable {
   }
 
   /// 解析 pic.large（完整大图 URL）。pic 可能是对象（rexxar v2）或字符串，都兼容；
-  /// 非 doubanio 域名不收（只兜豆瓣图）
+  /// 只收 https 且为 doubanio 域名（macOS ATS 禁明文 http，红线不豁免；非豆瓣图不兜）
   public static func parsePosterPath(from data: Data) -> String? {
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
     let raw: String?
@@ -110,7 +110,7 @@ public struct DoubanClient: Sendable {
     } else {
       raw = json["pic"] as? String
     }
-    guard let url = raw, url.hasPrefix("http"), url.contains("doubanio.com") else { return nil }
+    guard let url = raw, url.hasPrefix("https://"), url.contains("doubanio.com") else { return nil }
     return url
   }
 
