@@ -80,7 +80,11 @@ struct PosterBackfillTests {
     _ = try await repo.upsert(makeVideo(id: 1, poster: "http://localhost:3000/b.jpg"), chartScope: nil, chartRank: nil, now: now)
     #expect(try await poster(of: 1, repo: repo) == "https://image.tmdb.org/t/p/w500/abc.jpg")
 
-    // 站方修好给了真 URL：覆盖（尊重站方）
+    // 站方发 http 明文（img.mvinfo.homes 事故，2026-09-18 实测站方把好 URL 改写成 http）：同样不覆盖
+    _ = try await repo.upsert(makeVideo(id: 1, poster: "http://img.mvinfo.homes/uploads/newimg/x.jpg"), chartScope: nil, chartRank: nil, now: now)
+    #expect(try await poster(of: 1, repo: repo) == "https://image.tmdb.org/t/p/w500/abc.jpg")
+
+    // 站方修好给了 https 真 URL：覆盖（尊重站方）
     _ = try await repo.upsert(makeVideo(id: 1, poster: "https://tu.mvinfo.homes/i/fixed.jpg"), chartScope: nil, chartRank: nil, now: now)
     #expect(try await poster(of: 1, repo: repo) == "https://tu.mvinfo.homes/i/fixed.jpg")
   }

@@ -92,6 +92,7 @@ public struct VideoRepository: Sendable {
       poster_url=CASE
         WHEN excluded.poster_url IS NULL THEN videos.poster_url
         WHEN excluded.poster_url LIKE '%localhost%' THEN videos.poster_url
+        WHEN excluded.poster_url LIKE 'http://%' THEN videos.poster_url
         ELSE excluded.poster_url END,
       class_names=COALESCE(excluded.class_names, videos.class_names), production_area=COALESCE(excluded.production_area, videos.production_area),
       years=COALESCE(excluded.years, videos.years), release_info=COALESCE(excluded.release_info, videos.release_info), director=COALESCE(excluded.director, videos.director),
