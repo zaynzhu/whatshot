@@ -118,4 +118,30 @@ struct VideoRepositoryTests {
     let candidates = try await repo.detailRefreshCandidates(limit: 2, detailStaleHours: 168)
     #expect(candidates == [38000003, 38000002])
   }
+
+  /// 播出状态三态筛选（2026-09-20）：播出中=更新至X集、已完结=全集；
+  /// 空（未知状态）不算已完结也不算播出中
+  @Test func listVideosAiringFilter() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    _ = try await repo.upsert(makeVideo(id: 1, ejs: "更新至9集"), chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.upsert(makeVideo(id: 2, ejs: "全集12集"), chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.upsert(makeVideo(id: 3, ejs: ""), chartScope: nil, chartRank: nil, now: now)
+
+    var filter = VideoRepository.ListFilter()
+
+    filter.airing = .ongoing
+    let ongoing = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: filter)
+    #expect(ongoing.map(\.id) == [1])
+
+    filter.airing = .ended
+    let ended = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: filter)
+    #expect(ended.map(\.id) == [2]) // 未知状态（id=3）不冒充已完结
+
+    filter.airing = .all
+    let all = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: filter)
+    #expect(all.count == 3)
+    #expect(filter.isEmpty) // .all 是默认档，不激活筛选
+    #expect(!VideoRepository.ListFilter(airing: .ended).isEmpty)
+  }
 }

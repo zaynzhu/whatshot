@@ -196,20 +196,28 @@ public struct VideoRepository: Sendable {
   /// 内容筛选条件（纯本地 WHERE）。nil/空 = 不筛
   public struct ListFilter: Sendable, Equatable {
     public var years: String?          // 年代：复用但ai0 字典档位（2026/近三年/90年代…），本地按 years 数值映射
-    public var airingOnly: Bool         // 仅播出中（更新至X集）
+    public var airing: AiringFilter    // 播出状态三态（2026-09-20：全部/播出中/已完结，替代二值 airingOnly）
     public var classNames: String?      // 类型（单选，class_names 逗号分隔多值 LIKE 匹配）
     public var area: String?           // 地区（production_area LIKE）
 
-    public init(years: String? = nil, airingOnly: Bool = false, classNames: String? = nil, area: String? = nil) {
+    public init(years: String? = nil, airing: AiringFilter = .all, classNames: String? = nil, area: String? = nil) {
       self.years = years
-      self.airingOnly = airingOnly
+      self.airing = airing
       self.classNames = classNames
       self.area = area
     }
 
     public var isEmpty: Bool {
-      years == nil && !airingOnly && classNames == nil && area == nil
+      years == nil && airing == .all && classNames == nil && area == nil
     }
+  }
+
+  /// 播出状态筛选档位。站点 ejs 只有"更新至X集 / 全集 / 空"三态（Database.swift 建表注释），
+  /// 已完结 = 全集；空（未知状态）不算已完结
+  public enum AiringFilter: String, Sendable, Equatable {
+    case all = "全部"
+    case ongoing = "播出中"
+    case ended = "已完结"
   }
 
   /// 年代档位 → 年份区间映射（对齐但ai0 字典 t3：近三年/2026…2017/20年代…更早）
@@ -246,8 +254,13 @@ public struct VideoRepository: Sendable {
       binds.append(range.low)
       binds.append(range.high)
     }
-    if filter.airingOnly {
+    switch filter.airing {
+    case .ongoing:
       conditions.append("episode_status LIKE '更新至%'")
+    case .ended:
+      conditions.append("episode_status LIKE '全集%'") // 空（未知状态）不算已完结
+    case .all:
+      break
     }
     if let cls = filter.classNames, !cls.isEmpty {
       conditions.append("(class_names IS ? OR class_names LIKE ? OR class_names LIKE ? OR class_names LIKE ?)")
@@ -706,18 +719,37 @@ public struct VideoRepository: Sendable {
   /// 海报兜底候选：站方 URL 缺失、指向 localhost（站方发布事故，永不可达）、
   /// 或 http 明文（被 macOS ATS 静默拦截）。有外源海报 URL 的条目不算兜底失败，
   /// 因此只看 poster_url 形态，不另设"已尝试"标记——写库即出队。
+  /// mirrorPrefix = 自有桶 URL 前缀"{endpoint}/{bucket}/"（配置 S3 时传入，2026-09-20）：
+  /// ① 桶 URL 虽是 http 明文但是可信自有存储，不算坏图——否则已镜像条目每轮重复进队列，
+  ///    反复外源下载+探桶，并挤占兜底预算；
+  /// ② https 外源 URL 纳入待镜像——镜像降级直写外源的条目由此获得下轮重试入口，
+  ///    镜像存量（配 S3 前直写的条目）也一并清偿。站方原生好 https 极少（站方图床
+  ///    2026-09-18 起整体明文 http），被镜像到自有桶符合"自有桶是持久层"定案。
+  /// 未配 S3 时保持原口径（只收坏图，https 不进候选）。
   /// 返回 (id, doubanId, imdbNumber, kind)；有 imdb 走 TMDB，否则走豆瓣。
-  public func posterBackfillCandidates(limit: Int) async throws -> [(id: Int, doubanId: Int?, imdb: String?, kind: ButaiKind)] {
+  public func posterBackfillCandidates(limit: Int, mirrorPrefix: String? = nil) async throws -> [(id: Int, doubanId: Int?, imdb: String?, kind: ButaiKind)] {
     try await queue.run { db in
+      var conditions: [String] = [
+        "(poster_url IS NULL OR poster_url = '' OR poster_url LIKE '%localhost%')"
+      ]
+      var binds: [String] = []
+      if let mirrorPrefix {
+        conditions.append("(poster_url LIKE 'http://%' AND poster_url NOT LIKE ?)")
+        binds.append("\(mirrorPrefix)%")
+        conditions.append("poster_url LIKE 'https://%'")
+      } else {
+        conditions.append("poster_url LIKE 'http://%'")
+      }
       let stmt = try db.prepare("""
         SELECT id, douban_id, imdb_number, kind FROM videos
-        WHERE poster_url IS NULL OR poster_url = ''
-           OR poster_url LIKE '%localhost%'
-           OR poster_url LIKE 'http://%'
+        WHERE \(conditions.joined(separator: " OR "))
         ORDER BY seed_updated_at DESC LIMIT ?
       """)
       defer { sqlite3_finalize(stmt) }
-      SQLiteDatabase.bind(stmt, 1, limit)
+      for (index, value) in binds.enumerated() {
+        SQLiteDatabase.bind(stmt, Int32(index + 1), value)
+      }
+      SQLiteDatabase.bind(stmt, Int32(binds.count + 1), limit)
       var rows: [(id: Int, doubanId: Int?, imdb: String?, kind: ButaiKind)] = []
       while sqlite3_step(stmt) == SQLITE_ROW {
         let kindValue = db.int(stmt, 3) ?? 1
@@ -730,15 +762,18 @@ public struct VideoRepository: Sendable {
     }
   }
 
-  /// 写入兜底海报 URL。只在现有 poster_url 仍为空/localhost/http 时写（站方中途修好给真 URL
-  /// 则尊重站方），成功返回 true。豆瓣 URL 需带 Referer 才能下载，存库原样保留
+  /// 写入兜底海报 URL。默认只在现有 poster_url 仍为空/localhost/http 时写（站方中途修好给真 URL
+  /// 则尊重站方），成功返回 true。豆瓣 URL 需带 Referer 才能下载，存库原样保留。
+  /// allowHttpsOverwrite = 配置了 S3 时置 true：https 现值（镜像降级直写的外源、或镜像存量）
+  /// 视为"待镜像"，允许改写为桶 URL——候选 SQL 同口径，否则 https 条目写库永远被拒
   @discardableResult
-  public func setPosterBackfill(videoID: Int, url: String, at: Date) async throws -> Bool {
+  public func setPosterBackfill(videoID: Int, url: String, at: Date, allowHttpsOverwrite: Bool = false) async throws -> Bool {
     try await queue.run { db in
+      let httpsClause = allowHttpsOverwrite ? " OR poster_url LIKE 'https://%'" : ""
       let stmt = try db.prepare("""
         UPDATE videos SET poster_url = ?
         WHERE id = ? AND (poster_url IS NULL OR poster_url = ''
-          OR poster_url LIKE '%localhost%' OR poster_url LIKE 'http://%')
+          OR poster_url LIKE '%localhost%' OR poster_url LIKE 'http://%'\(httpsClause))
       """)
       defer { sqlite3_finalize(stmt) }
       SQLiteDatabase.bind(stmt, 1, url)

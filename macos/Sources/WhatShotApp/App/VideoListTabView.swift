@@ -53,7 +53,7 @@ struct VideoGridTabView: View {
 
   /// 已激活条件数（面包屑条状态行的琥珀强调）
   private var activeCount: Int {
-    (filter.years != nil ? 1 : 0) + (filter.airingOnly ? 1 : 0) +
+    (filter.years != nil ? 1 : 0) + (filter.airing != .all ? 1 : 0) +
     (filter.classNames != nil ? 1 : 0) + (filter.area != nil ? 1 : 0)
   }
 
@@ -138,13 +138,10 @@ struct VideoGridTabView: View {
         eyebrow: "STATUS",
         label: "状态",
         options: ["播出中", "已完结"],
-        selection: filter.airingOnly ? "播出中" : nil
+        selection: filter.airing == .all ? nil : filter.airing.rawValue
       ) { next in
-        switch next {
-        case "播出中": filter.airingOnly = true
-        case "已完结": filter.airingOnly = false // 已完结语义 = 不筛播出状态中的更新至；用空筛选代替二值开关
-        default: filter.airingOnly = false
-        }
+        // 三态（2026-09-20）：播出中=更新至X集、已完结=全集；空（未知状态）两边都不算
+        filter.airing = VideoRepository.AiringFilter(rawValue: next ?? "") ?? .all
       })
     }
     list.append(ChipGroupModel(
@@ -230,7 +227,7 @@ struct VideoGridTabView: View {
 
   /// 任务 key：任何排序/筛选变化都整页重载
   private var reloadKey: String {
-    "\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airingOnly)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
+    "\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
   }
 
   func loadMore() async {

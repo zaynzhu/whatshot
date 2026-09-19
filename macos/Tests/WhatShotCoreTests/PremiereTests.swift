@@ -187,7 +187,7 @@ struct PremiereTests {
     let old = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(years: "90年代"))
     #expect(old.map(\.id) == [2])
     // 播出中
-    let airing = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(airingOnly: true))
+    let airing = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(airing: .ongoing))
     #expect(airing.map(\.id) == [1])
     // 类型多值 LIKE（"剧情,犯罪" 命中单选"犯罪"）
     let crime = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(classNames: "犯罪"))
@@ -196,7 +196,7 @@ struct PremiereTests {
     let mainland = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(area: "大陆"))
     #expect(mainland.map(\.id) == [1])
     // 组合：2026 + 播出中
-    let combined = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(years: "2026", airingOnly: true))
+    let combined = try await repo.listVideos(kind: .tvSeries, limit: 10, offset: 0, filter: .init(years: "2026", airing: .ongoing))
     #expect(combined.map(\.id) == [1])
     // 筛选 + 首播排序叠加
     try await repo.setPremiereDate(doubanId: 370_000_02, date: "1999-09-21", at: now)
