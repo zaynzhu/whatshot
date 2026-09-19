@@ -3,13 +3,16 @@ import Foundation
 import WhatShotCore
 
 /// 海报加载器：NSCache 内存缓存 + 磁盘缓存（有上限、LRU 淘汰）
-/// 内存压力时 NSCache 自动逐出，磁盘上限默认跟随设置
+/// 内存压力时 NSCache 自动逐出，磁盘上限跟随设置（保存后 updateLimit 接入）
 final class PosterLoader: @unchecked Sendable {
   static let shared = PosterLoader()
 
   private let memoryCache = NSCache<NSURL, NSImage>()
   private let diskDir: URL
-  private let limitBytes: Int64
+  /// 磁盘上限字节；0 = 关闭磁盘缓存（不读不写，海报仅内存）。锁保护：设置可运行中改
+  private let limitLock = NSLock()
+  private var _limitBytes: Int64
+  private var limitBytes: Int64 { limitLock.withLock { _limitBytes } }
   private let ioQueue = DispatchQueue(label: "whatshot.poster", qos: .utility)
 
   init(limitMB: Int = 300) {
@@ -18,7 +21,13 @@ final class PosterLoader: @unchecked Sendable {
       .appendingPathComponent("WhatShot/posters", isDirectory: true)
     try? FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
     diskDir = caches
-    limitBytes = Int64(max(0, limitMB)) * 1024 * 1024
+    _limitBytes = Int64(max(0, limitMB)) * 1024 * 1024
+  }
+
+  /// 设置保存后接入实际容量（2026-09-20 修复：此前 posterCacheLimitMB 只存展示、从未生效）。
+  /// 0 = 关闭：不读不写磁盘；存量文件保留不清空，调回上限后由 LRU 逐步淘汰收敛
+  func updateLimit(mb: Int) {
+    limitLock.withLock { _limitBytes = Int64(max(0, mb)) * 1024 * 1024 }
   }
 
   func load(_ url: URL) async -> NSImage? {
@@ -27,7 +36,7 @@ final class PosterLoader: @unchecked Sendable {
     }
     let key = url.absoluteString.sha1Hex()
     let fileURL = diskDir.appendingPathComponent(key)
-    if let data = try? Data(contentsOf: fileURL), let image = NSImage(data: data) {
+    if limitBytes > 0, let data = try? Data(contentsOf: fileURL), let image = NSImage(data: data) {
       // 磁盘缓存里的历史数据可能含图床占位图，读出后同样过滤
       if PosterLoader.isPlaceholder(image) {
         memoryCache.setObject(PosterLoader.placeholderSentinel, forKey: url as NSURL, cost: 1)
@@ -58,6 +67,8 @@ final class PosterLoader: @unchecked Sendable {
     memoryCache.setObject(image, forKey: url as NSURL, cost: image.pixelBytes)
     let cost = image.pixelBytes
     ioQueue.async {
+      // 关闭磁盘缓存：新请求不写盘（读路径已在 limitBytes > 0 处跳过）
+      guard self.limitBytes > 0 else { return }
       try? data.write(to: fileURL, options: .atomic)
       self.enforceLimit(cost: cost)
     }

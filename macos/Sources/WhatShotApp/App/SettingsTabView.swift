@@ -264,7 +264,8 @@ struct SettingsTabView: View {
             .font(.system(size: 10.5).monospacedDigit())
             .foregroundStyle(ratio >= 0.9 ? Theme.accent : Theme.textTertiary)
         } else {
-          Text("未设上限，缓存随访问自动增长")
+          // ratio 为 nil 只在关闭（0）时出现：不写不读磁盘，仅内存缓存
+          Text(draft.posterCacheLimitMB == 0 ? "已关闭，海报仅缓存在内存" : "未设上限，缓存随访问自动增长")
             .font(.system(size: 10.5))
             .foregroundStyle(Theme.textTertiary)
         }
