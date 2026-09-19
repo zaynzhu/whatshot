@@ -357,12 +357,17 @@ public struct SyncEngine: Sendable {
     return PremiereBackfillSummary(fetched: candidates.count, withDate: withDate, warning: blocked)
   }
 
-  /// 海报兜底常量：豆瓣路径每轮上限（与首播日护栏同值，防两步叠加拖长同步）。
-  /// 候选为站方事故条目，存量有限（首查 70 条），稳态随新入库条目增长
+  /// 海报兜底常量：豆瓣路径每轮上限。稳态 30（9-19 实测两轮 30 条全 200 无 403）；
+  /// 积压 >100 条时放宽 60/轮清偿（站方 img.mvinfo 事故存量 500+ 条，30/轮要 4 天+，
+  /// 60/轮约 2 天清完；403 停批保护兜底，最坏损失一轮）
   public struct PosterBudget: Sendable {
     public var doubanPerRun: Int
-    public init(doubanPerRun: Int = 30) {
+    public var backlogTrigger: Int
+    public var backlogPerRun: Int
+    public init(doubanPerRun: Int = 30, backlogTrigger: Int = 100, backlogPerRun: Int = 60) {
       self.doubanPerRun = doubanPerRun
+      self.backlogTrigger = backlogTrigger
+      self.backlogPerRun = backlogPerRun
     }
   }
   public var posterBudget = PosterBudget()
@@ -440,9 +445,11 @@ public struct SyncEngine: Sendable {
     let candidates = (try? await repo.posterBackfillCandidates(limit: 200)) ?? []
     let needDouban = candidates.filter { ($0.imdb == nil || $0.imdb?.hasPrefix("tt") != true) && $0.doubanId != nil && $0.doubanId! > 0 }
     guard !needDouban.isEmpty else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
+    // 积压清偿：坏 URL 存量超过阈值时放宽本轮上限（新条目稳态用小步）
+    let perRun = needDouban.count > posterBudget.backlogTrigger ? posterBudget.backlogPerRun : posterBudget.doubanPerRun
     var withDate = 0
     var blocked: String?
-    for (index, candidate) in needDouban.prefix(posterBudget.doubanPerRun).enumerated() {
+    for (index, candidate) in needDouban.prefix(perRun).enumerated() {
       guard let doubanId = candidate.doubanId else { continue }
       do {
         guard let source = try await douban.fetchPosterPath(doubanId: doubanId) else {
