@@ -9,6 +9,7 @@ struct DetailSheet: View {
   let repo: VideoRepository?
   @Environment(\.dismiss) private var dismiss
   @State private var observations: [VideoRepository.ObservationRow] = []
+  @State private var watched = false
 
   var body: some View {
     HStack(alignment: .top, spacing: 18) {
@@ -57,6 +58,8 @@ struct DetailSheet: View {
 
         externalLinks
 
+        watchlistButton
+
         if !observations.isEmpty {
           Rectangle().fill(Theme.hairline).frame(height: 1)
           VStack(alignment: .leading, spacing: 4) {
@@ -97,7 +100,33 @@ struct DetailSheet: View {
     .padding(20)
     .frame(width: 620)
     .background(Theme.elevated)
-    .task { await loadObservations() }
+    .task {
+      await loadObservations()
+      watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
+    }
+  }
+
+  // MARK: - 追剧（定案七）
+
+  /// 关注/取消关注：写 watchlist 表；更新汇总水位以关注时刻为起点
+  private var watchlistButton: some View {
+    Button {
+      Task {
+        guard let repo else { return }
+        if watched {
+          try? await repo.removeFromWatchlist(videoID: video.id)
+        } else {
+          try? await repo.addToWatchlist(videoID: video.id, at: Date())
+        }
+        watched.toggle()
+      }
+    } label: {
+      Label(watched ? "已追剧" : "追剧", systemImage: watched ? "bookmark.fill" : "bookmark")
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(watched ? Theme.accent : Theme.textSecondary)
+    }
+    .buttonStyle(.plain)
+    .help(watched ? "取消关注，更新不再汇总" : "关注后离开榜单仍每轮检查更新，更新汇总在「追剧」页")
   }
 
   // MARK: - 元信息行

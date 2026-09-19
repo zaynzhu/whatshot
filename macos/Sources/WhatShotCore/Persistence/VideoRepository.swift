@@ -810,16 +810,133 @@ public struct VideoRepository: Sendable {
     }
   }
 
-  /// 最近一次成功（success 或 warning）同步时间
+  /// 最近一次成功（success 或 warning）同步时间。stopped 也算：手动停止发生在补全阶段，
+  /// 主数据批次已提交保留，顶栏"已同步 X 前"不因停止回退
   public func lastSuccessfulSync() async throws -> Date? {
     try await queue.run { db in
       let stmt = try db.prepare("""
-        SELECT MAX(finished_at) FROM sync_runs WHERE status IN ('success','warning')
+        SELECT MAX(finished_at) FROM sync_runs WHERE status IN ('success','warning','stopped')
       """)
       defer { sqlite3_finalize(stmt) }
       guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
       return date(db.int(stmt, 0))
     }
+  }
+
+  // MARK: - 我的追剧（2026-09-20 定案七）
+
+  /// 关注。幂等：已关注时保留原 created_at（更新汇总的水位起点不因重复点击前移）
+  public func addToWatchlist(videoID: Int, at: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("INSERT OR IGNORE INTO watchlist (video_id, created_at) VALUES (?,?)")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, videoID)
+      SQLiteDatabase.bind(stmt, 2, Int(at.timeIntervalSince1970))
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "关注写入失败")
+      }
+    }
+  }
+
+  public func removeFromWatchlist(videoID: Int) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("DELETE FROM watchlist WHERE video_id = ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, videoID)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "取消关注失败")
+      }
+    }
+  }
+
+  public func isWatched(videoID: Int) async throws -> Bool {
+    try await queue.run { db in
+      let stmt = try db.prepare("SELECT 1 FROM watchlist WHERE video_id = ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, videoID)
+      return sqlite3_step(stmt) == SQLITE_ROW
+    }
+  }
+
+  /// 追剧行：条目 + 关注时刻
+  public struct WatchlistRow: Sendable, Equatable {
+    public var video: VideoRow
+    public var createdAt: Date
+  }
+
+  /// 追剧列表，关注新到旧
+  public func watchlistRows() async throws -> [WatchlistRow] {
+    try await queue.run { db in
+      // 列序与 videoRow(offset:0) 固定列序一致，created_at 在末列（offset 27）
+      let stmt = try db.prepare("""
+        SELECT v.id, v.kind, v.title, v.episode_status, v.episodes, v.seed_count, v.netdisk_count,
+               v.douban_score, v.imdb_score, v.poster_url, v.last_synced_at,
+               v.otitle, v.alias, v.douban_id, v.imdb_number, v.class_names, v.production_area,
+               v.years, v.release_info, v.director, v.performer, v.abstract, v.definition,
+               v.seed_updated_at, v.source_updated_at, v.premiere_date, v.premiere_source,
+               w.created_at
+        FROM watchlist w JOIN videos v ON v.id = w.video_id
+        ORDER BY w.created_at DESC
+      """)
+      defer { sqlite3_finalize(stmt) }
+      var rows: [WatchlistRow] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        rows.append(WatchlistRow(
+          video: videoRow(stmt, db),
+          createdAt: date(db.int(stmt, 27))
+        ))
+      }
+      return rows
+    }
+  }
+
+  /// 追剧条目的详情刷新候选：最久未检查优先（离开热门榜与最近更新页的作品靠它保持更新）。
+  /// detail 接口的 id 参数是豆瓣 ID，无豆瓣 ID 的条目检查不了，直接排除
+  public func watchlistDetailCandidates(limit: Int) async throws -> [(videoID: Int, doubanId: Int)] {
+    try await queue.run { db in
+      let stmt = try db.prepare("""
+        SELECT v.id, v.douban_id FROM watchlist w JOIN videos v ON v.id = w.video_id
+        WHERE v.douban_id IS NOT NULL AND v.douban_id > 0
+        ORDER BY COALESCE(v.last_detail_at, 0) ASC LIMIT ?
+      """)
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, limit)
+      var rows: [(videoID: Int, doubanId: Int)] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let id = db.int(stmt, 0), let doubanId = db.int(stmt, 1) {
+          rows.append((videoID: id, doubanId: doubanId))
+        }
+      }
+      return rows
+    }
+  }
+
+  /// 更新汇总行：自水位以来的集数变化
+  public struct WatchlistUpdate: Sendable, Equatable {
+    public var video: VideoRow
+    public var fromEjs: String?      // 水位前最近观察（nil = 关注后尚无基线）
+    public var toEjs: String?        // 水位后最新观察
+    public var observedAt: Date      // 本地发现时间——如实标注，不冒充播出日
+  }
+
+  /// 更新汇总口径（定案七）：每条追剧条目取水位 = max(查看水位, 关注时刻)，比较水位前最近一条
+  /// 与水位后最新一条的 ejs，不同才算更新——关注前的历史观察不报（首次不制造伪更新），
+  /// 重复同步不重复报（比较首尾不逐条），集数回退（站方修正）如实展示方向
+  public func watchlistUpdates(since: Date) async throws -> [WatchlistUpdate] {
+    let rows = try await watchlistRows()
+    var updates: [WatchlistUpdate] = []
+    for row in rows {
+      let sinceTs = max(since.timeIntervalSince1970, row.createdAt.timeIntervalSince1970)
+      // observations 倒序：first(> 水位) = 水位后最新；first(<= 水位) = 水位前最近
+      let obs = try await observations(videoID: row.video.id, limit: 200)
+      let after = obs.first { $0.observedAt.timeIntervalSince1970 > sinceTs }
+      let before = obs.first { $0.observedAt.timeIntervalSince1970 <= sinceTs }
+      let to = after?.ejs.flatMap { $0.isEmpty ? nil : $0 }
+      let from = before?.ejs.flatMap { $0.isEmpty ? nil : $0 }
+      guard let after, let to, let from, from != to else { continue }
+      updates.append(WatchlistUpdate(video: row.video, fromEjs: from, toEjs: to, observedAt: after.observedAt))
+    }
+    return updates
   }
 
   // MARK: - 绑定辅助

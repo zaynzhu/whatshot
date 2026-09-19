@@ -6,6 +6,8 @@ public struct SyncSummary: Sendable, Equatable {
   /// failed：一条数据都没拿到。UI 按 status 区分红色错误与琥珀提示
   public enum Status: String, Sendable, Equatable {
     case success, warning, failed
+    /// 用户手动停止：主数据批次已提交保留，补全步骤未跑完（定案七：取消不留伪成功状态）
+    case stopped
   }
 
   public var status: Status
@@ -83,6 +85,18 @@ public struct SyncEngine: Sendable {
   /// 可注入时钟（测试用），默认当前时间
   public var clock: @Sendable () -> Date = { Date() }
 
+  /// 实时进度回调（定案七）：每步开始/补全推进时触发（label, 已完成数）。
+  /// AppModel 转发到主线程展示"同步中 · 某阶段 · 已补 N"。回调在同步 Task 上执行，勿做重活
+  public var onProgress: (@Sendable (_ label: String, _ count: Int?) -> Void)?
+
+  /// 追剧检查每轮上限（定案七）：detail 接口 2 秒限频下 20 条约 40 秒；
+  /// 关注较多时分轮刷新（最久未检查优先），多数追剧作品仍在活跃范围被常规同步覆盖
+  public var watchlistBudgetPerRun = 20
+
+  private func progress(_ label: String, _ count: Int? = nil) {
+    onProgress?(label, count)
+  }
+
   public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
               selector: DomainSelector? = nil, douban: DoubanClient? = nil, tmdb: TmdbClient? = nil,
               s3: S3Client? = nil) {
@@ -139,7 +153,9 @@ public struct SyncEngine: Sendable {
 
     // 1. 热门榜三个 scope（每榜一个事务批次：整批共享时间戳，写失败整批回滚不替换旧榜）
     for scope in ButaiChartScope.allCases {
+      if Task.isCancelled { break } // 手动停止：在步骤边界退出，已提交批次保留
       do {
+        progress("拉取\(scope.label)")
         let videos = try await resilientFetch(scope.label) { client in
           try await client.fetchChart(scope)
         }
@@ -158,12 +174,15 @@ public struct SyncEngine: Sendable {
 
     // 2. 电影/剧集最近更新页
     for kind in [ButaiKind.movie, .tvSeries] {
+      if Task.isCancelled { break }
       let kindLabel = kind == .movie ? "电影" : "剧集"
       let pages = kind == .movie ? settings.movieListPages : settings.tvListPages
       var kindCount = 0
       var kindFailed = false
       for page in 1...max(1, pages) {
+        if Task.isCancelled { break }
         do {
+          progress("拉取\(kindLabel)第\(page)页")
           let videos = try await resilientFetch("\(kindLabel)第\(page)页") { client in
             try await client.fetchMovieList(mediaKind: kind, page: page)
           }
@@ -188,8 +207,10 @@ public struct SyncEngine: Sendable {
     if fetched > 0 || failures.isEmpty {
       let candidates = (try? await repo.detailRefreshCandidates(limit: 20, detailStaleHours: 168)) ?? []
       for doubanID in candidates {
+        if Task.isCancelled { break }
         guard doubanID > 0 else { continue } // 无豆瓣 ID 的条目无法拉详情
         do {
+          progress("详情补拉", detailCount)
           let detail = try await resilientFetch("详情\(doubanID)") { client in
             try await client.fetchDetail(id: doubanID)
           }
@@ -207,6 +228,17 @@ public struct SyncEngine: Sendable {
     steps.append(SyncSummary.SyncStep(id: stepID, label: "条目详情补拉",
                                       outcome: detailFailed == 0 ? "ok" : "partial",
                                       count: detailFailed == 0 ? detailCount : nil))
+
+    // 3b. 追剧条目检查（定案七）：离开热门榜与最近更新页的作品靠 detail 单条刷新保持最新，
+    // 最久未检查优先、每轮 ≤ watchlistBudgetPerRun。失败只计 warning，不阻断
+    let watchlist = await refreshWatchlist()
+    stepID += 1
+    steps.append(SyncSummary.SyncStep(id: stepID, label: "追剧检查",
+                                      outcome: watchlist.failed == 0 ? "ok" : "partial",
+                                      count: watchlist.checked))
+    if watchlist.failed > 0 {
+      failures.append("追剧检查 \(watchlist.failed) 条失败，下轮自动重试")
+    }
 
     // 4. 剧集首播日豆瓣补全（一期单源例外，requirements.md 定案二/四）。
     // 三档限速：稳态 10 / 积压>30 放宽 30 / 绝对护栏 30；豆瓣任何失败只计 warning，不阻断主同步。
@@ -268,10 +300,17 @@ public struct SyncEngine: Sendable {
 
     let finishedAt = Date()
     let duration = finishedAt.timeIntervalSince(startedAt)
+    // 手动停止：在途请求抛出的取消类错误不算失败；主数据批次已提交保留，如实标注"已停止"
+    let cancelled = Task.isCancelled
+    if cancelled {
+      failures = failures.filter { !$0.contains("cancelled") }
+    }
     let error = failures.isEmpty ? nil : failures.joined(separator: "；")
-    let status: SyncSummary.Status = failures.isEmpty ? .success : (fetched > 0 ? .warning : .failed)
+    let status: SyncSummary.Status = cancelled ? .stopped
+      : (failures.isEmpty ? .success : (fetched > 0 ? .warning : .failed))
     if runID > 0 {
-      try? await repo.finishSyncRun(id: runID, status: status.rawValue, fetched: fetched, changed: changed, error: error, at: finishedAt)
+      try? await repo.finishSyncRun(id: runID, status: cancelled ? "stopped" : status.rawValue,
+                                    fetched: fetched, changed: changed, error: error, at: finishedAt)
     }
     return SyncSummary(status: status, fetchedCount: fetched, changedCount: changed, detailCount: detailCount,
                        durationSeconds: duration, error: error, refreshedScopes: refreshedScopes, steps: steps)
@@ -295,6 +334,7 @@ public struct SyncEngine: Sendable {
     var withDate = 0
     var blocked: String?
     for (index, doubanId) in candidates.enumerated() {
+      if Task.isCancelled { break }
       do {
         let date = try await douban.fetchPremiereDate(doubanId: doubanId)
         // 无日期也记录抓取过（premiere_fetched_at 置位），避免每轮反复重查已知无日期的条目
@@ -338,6 +378,7 @@ public struct SyncEngine: Sendable {
     var withDate = 0
     var blocked: String?
     for candidate in candidates {
+      if Task.isCancelled { break }
       do {
         let premiere = try await tmdb.fetchSeasonPremiere(imdbId: candidate.imdb, title: candidate.title)
         // 只补空不覆盖豆瓣；写入成功计数（已有豆瓣日期的返回 false 不算新增）
@@ -420,6 +461,7 @@ public struct SyncEngine: Sendable {
     var withDate = 0
     var blocked: String?
     for candidate in withImdb {
+      if Task.isCancelled { break }
       guard let imdb = candidate.imdb else { continue }
       do {
         guard let path = try await tmdb.fetchPosterPath(imdbId: imdb) else { continue }
@@ -455,6 +497,7 @@ public struct SyncEngine: Sendable {
     var withDate = 0
     var blocked: String?
     for (index, candidate) in needDouban.prefix(perRun).enumerated() {
+      if Task.isCancelled { break }
       guard let doubanId = candidate.doubanId else { continue }
       do {
         guard let source = try await douban.fetchPosterPath(doubanId: doubanId) else {
@@ -490,6 +533,31 @@ public struct SyncEngine: Sendable {
       }
     }
     return PremiereBackfillSummary(fetched: needDouban.count, withDate: withDate, warning: blocked)
+  }
+
+  /// 追剧条目检查：detail 单条刷新（与常规详情补拉同通道，2 秒限频共享）。
+  /// 最久未检查优先；单条失败静默跳过（条目失效类失败会每轮重复，计总量 warning 而非逐条噪声）
+  func refreshWatchlist() async -> (checked: Int, failed: Int) {
+    guard watchlistBudgetPerRun > 0 else { return (0, 0) }
+    let candidates = (try? await repo.watchlistDetailCandidates(limit: watchlistBudgetPerRun)) ?? []
+    var checked = 0
+    var failed = 0
+    for candidate in candidates {
+      if Task.isCancelled { break }
+      do {
+        progress("追剧检查", checked)
+        let detail = try await resilientFetch("追剧\(candidate.doubanId)") { client in
+          try await client.fetchDetail(id: candidate.doubanId)
+        }
+        // 与常规详情补拉同口径：只补全字段不覆盖已有分类
+        _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock(), preserveKind: true)
+        try await repo.markDetailSynced(videoID: detail.id, at: clock())
+        checked += 1
+      } catch {
+        failed += 1
+      }
+    }
+    return (checked, failed)
   }
 
   func describe(_ error: Error) -> String {

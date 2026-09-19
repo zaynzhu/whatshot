@@ -175,6 +175,11 @@ enum Schema {
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS watchlist (
+    video_id INTEGER PRIMARY KEY REFERENCES videos(id),
+    created_at INTEGER NOT NULL            -- 关注时刻：更新汇总的水位起点（关注前历史不报，定案七）
+  );
   """
 
   static func migrate(_ db: SQLiteDatabase) throws {

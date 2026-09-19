@@ -8,7 +8,9 @@ struct ContentView: View {
   @State private var tab = 0
   @State private var lastSync: Date?
 
-  private let tabs = ["热门榜", "剧集", "电影", "设置"]
+  private let tabs = ["热门榜", "追剧", "剧集", "电影", "设置"]
+  /// 追剧 tab 的下标：未读圆点挂它身上
+  private let watchlistTabIndex = 1
 
   var body: some View {
     VStack(spacing: 0) {
@@ -19,8 +21,9 @@ struct ContentView: View {
       ZStack {
         switch tab {
         case 0: ChartTabView()
-        case 1: TVTabView()
-        case 2: MovieTabView()
+        case 1: WatchlistTabView()
+        case 2: TVTabView()
+        case 3: MovieTabView()
         default: SettingsTabView()
         }
       }
@@ -52,6 +55,15 @@ struct ContentView: View {
           TextTab(title: title, selected: tab == index) {
             withAnimation(.easeOut(duration: 0.15)) { tab = index }
           }
+          // 追剧未读圆点（定案七）：有更新时提示，进入追剧页即读
+          .overlay(alignment: .topTrailing) {
+            if index == watchlistTabIndex, app.watchlistUnread > 0 {
+              Circle()
+                .fill(Theme.accent)
+                .frame(width: 5, height: 5)
+                .offset(x: 6, y: -2)
+            }
+          }
         }
       }
 
@@ -64,9 +76,13 @@ struct ContentView: View {
           ProgressView()
             .controlSize(.small)
             .tint(Theme.accent)
-          Text("同步中…")
+          // 实时阶段（定案七）："拉取本周热门" / "首播日补全 · 已补 5"
+          Text(app.syncPhase ?? "同步中…")
             .font(.system(size: 11))
             .foregroundStyle(Theme.textSecondary)
+          OutlineButton(title: "停止", icon: "xmark") {
+            app.stopSync()
+          }
         } else {
           if let error = app.lastError {
             statusButton(text: "同步出错", color: .red.opacity(0.9), help: error)
@@ -75,6 +91,10 @@ struct ContentView: View {
             let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0))" } ?? ""
             statusButton(text: "部分完成\(ago)", color: Theme.accent,
                          help: warning + "\n主数据已更新，失败部分下轮自动重试")
+          } else if let summary = app.lastSummary, summary.status == .stopped,
+                    let finishedAt = app.lastSyncFinishedAt {
+            statusButton(text: "已停止 \(Self.relativeTime(finishedAt))", color: Theme.textTertiary,
+                         help: "上次同步被手动停止，主数据已保留；补全下轮自动继续")
           } else if let lastSync {
             statusButton(text: "已同步 \(Self.relativeTime(lastSync))", color: Theme.textTertiary, help: lastSyncSummary)
           }
@@ -161,6 +181,7 @@ private struct SyncDetailPopoverContent: View {
     case .success: return "上次同步：全部成功"
     case .warning: return "上次同步：部分完成"
     case .failed: return "上次同步：失败"
+    case .stopped: return "上次同步：手动停止"
     }
   }
 
@@ -221,6 +242,10 @@ private struct SyncDetailPopoverContent: View {
             .fixedSize(horizontal: false, vertical: true)
           if summary.status == .warning {
             Text("主数据已更新；失败部分不影响使用，下轮同步自动重试")
+              .font(.system(size: 10))
+              .foregroundStyle(Theme.textTertiary)
+          } else if summary.status == .stopped {
+            Text("已提交的数据批次已保留；未执行的补全步骤（详情/首播日/海报/追剧检查）下轮同步自动继续")
               .font(.system(size: 10))
               .foregroundStyle(Theme.textTertiary)
           }

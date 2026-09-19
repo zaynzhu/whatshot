@@ -14,6 +14,8 @@ public final class AppModel {
 
   public private(set) var syncing = false
   public private(set) var lastSummary: SyncSummary?
+  /// 同步进行中的实时阶段（定案七）："拉取本周热门" / "首播日补全 · 已补 5"
+  public private(set) var syncPhase: String?
   /// 最近一次同步结束时间（相对时间"X 分钟前"随它演进）
   public private(set) var lastSyncFinishedAt: Date?
   /// 仅严重错误（failed：一条数据都没拿到）才置位，顶栏红色提示
@@ -21,7 +23,13 @@ public final class AppModel {
   /// warning 级问题（主数据成功，部分步骤失败如豆瓣 403），顶栏琥珀提示
   public private(set) var lastWarning: String?
 
+  /// 追剧未读数（定案七）：水位（上次查看汇总时刻）以来有集数变化的条目数。
+  /// 追剧页进入即读（水位推进），同步完成后重算
+  public private(set) var watchlistUnread = 0
+
   private var syncTask: Task<Void, Never>?
+  /// 运行中的同步引擎 Task：手动停止 = cancel 它，引擎在步骤边界退出（已提交批次保留）
+  private var activeEngineTask: Task<SyncSummary, Never>?
   /// 域名择优器：跨同步轮次保持冠军记忆
   private let domainSelector = DomainSelector()
   /// 最近一次探活结果（当前域名+延迟），供设置页展示
@@ -65,6 +73,12 @@ public final class AppModel {
     await maybeSync(force: true)
   }
 
+  /// 手动停止（定案七）：cancel 引擎 Task，步骤边界退出——已提交批次保留，
+  /// 不中断事务、不留伪成功状态（收尾标 stopped，非 failed/success）
+  func stopSync() {
+    activeEngineTask?.cancel()
+  }
+
   func maybeSync(force: Bool) async {
     guard !syncing, let repo = repo else { return }
     if !force {
@@ -77,7 +91,12 @@ public final class AppModel {
     syncing = true
     lastError = nil
     lastWarning = nil
-    defer { syncing = false }
+    syncPhase = "准备同步"
+    defer {
+      syncing = false
+      syncPhase = nil
+      activeEngineTask = nil
+    }
     // 域名择优：先抓发布页自动发现官方域名（失败静默回落内置兜底池），
     // 再探活选当前最优路由（冠军快路径，全池降级），全池不可达才报错
     let published = await DomainPool.fetchPublishedDomains()
@@ -107,7 +126,7 @@ public final class AppModel {
        let access = settings.s3AccessKey, let secret = settings.s3SecretKey {
       s3 = S3Client(endpoint: endpoint, bucket: bucket, accessKey: access, secretKey: secret)
     }
-    let engine = SyncEngine(
+    var engine = SyncEngine(
       client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
       settings: settings,
@@ -116,15 +135,50 @@ public final class AppModel {
       tmdb: tmdb,
       s3: s3
     )
-    let summary = await engine.run()
+    // 实时阶段回调：引擎在同步 Task 上执行，转发主线程展示
+    engine.onProgress = { [weak self] label, count in
+      Task { @MainActor [weak self] in
+        self?.syncPhase = count.map { "\(label) · 已补 \($0)" } ?? label
+      }
+    }
+    // 引擎包内层 Task：手动停止时 cancel 这个句柄
+    let engineTask = Task { await engine.run() }
+    activeEngineTask = engineTask
+    let summary = await engineTask.value
     lastSummary = summary
     lastSyncFinishedAt = Date()
-    // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情
+    // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情；
+    // stopped 是用户主动停止，不冒充错误也不冒充成功
     if summary.status == .failed {
       lastError = summary.error
+    } else if summary.status == .stopped {
+      // 顶栏走"已停止"展示；主数据已保留
     } else if let warning = summary.error {
       lastWarning = warning
     }
+    await refreshWatchlistUnread()
+  }
+
+  // MARK: - 追剧更新汇总（定案七）
+
+  /// 查看水位（上次查看更新汇总的时刻）。UserDefaults 只存本机，符合"数据不上传"红线。
+  /// 初始 0 = 最早时刻：安全——汇总口径取 max(水位, 关注时刻)，关注前历史永不上报
+  private var watchlistWatermark: Date {
+    let ts = UserDefaults.standard.double(forKey: "watchlist.lastViewed")
+    return ts > 0 ? Date(timeIntervalSince1970: ts) : .distantPast
+  }
+
+  /// 重算未读数（tab 圆点）。同步完成、进入追剧页后调用
+  func refreshWatchlistUnread() async {
+    guard let repo else { return }
+    let updates = (try? await repo.watchlistUpdates(since: watchlistWatermark)) ?? []
+    watchlistUnread = updates.count
+  }
+
+  /// 进入追剧页即视为已读：展示当前明细后推进水位
+  func markWatchlistViewed() {
+    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "watchlist.lastViewed")
+    watchlistUnread = 0
   }
 
   /// 挂载下一次定时同步：短促任务跑完即静默，不用长驻 timer 轮询
