@@ -2,9 +2,16 @@
 
 ## 项目定位
 
-WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期主数据源。**首播日有两个收窄的补全源，都只补首播日**（剧集页首播排序依赖）：① 豆瓣 rexxar 接口按库内 douban_id 直连补（取值口径"全都要取最早"）；② TMDB 兜底——豆瓣限流时给有 IMDb 号的剧集补**该季**首播日（不是系列 first_air_date；按 imdb_id 直连不标题搜索；只补空不覆盖豆瓣已写日期）。两个源都不得做标题搜索、不补评分/简介/海报/逐集，机制细节见 docs/requirements.md 定案二/五。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
+WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）追踪应用。参考站 https://www.butai0.club/ 的公开 JSON 接口为一期主数据源。**首播日与海报各有收窄的补全源**（剧集页首播排序与海报展示依赖）：① 豆瓣 rexxar 接口按库内 douban_id 直连，补首播日（取值口径"全都要取最早"）与海报（`pic.large`，`/tv/` 404 回退 `/movie/`）；② TMDB 兜底——给有 IMDb 号的条目补**该季**首播日（不是系列 first_air_date）与海报（`/find` 按 imdb_id 直连不标题搜索）。两者都只补空/坏值不覆盖豆瓣已写日期与站方好 URL。两个源都不得做标题搜索、不补评分/简介/逐集，机制细节见 docs/requirements.md 定案二/五/六。**WhatSew 参考项目（`../whatsnew`）只作架构参考，不得改动。**
 
-一期明确不做：资源搜索（二期）、NAS 后端（架构已定为纯本地）、多源热度叠加（二期）。
+一期明确不做：资源搜索（二期）、NAS 后端（架构仍为纯本地——S3 镜像桶是哑存储例外，见下）、多源热度叠加（二期）。
+
+## 海报与 S3 镜像（2026-09-18 定案六）
+
+- **站方图床不可信**：butai0 挂过 `http://localhost:3000` 事故 URL，2026-09-18 起图床整体迁移 `img.mvinfo.homes` 且只有明文 http——**App 一律不请求站方 http 图床**（macOS ATS 红线，不豁免任何第三方域）
+- **海报兜底**：`poster_url` 为空/localhost/http 的条目，有 IMDb 走 TMDB、其余走豆瓣；写库只补坏 URL，`upsert` 的 CASE 防"站方把好 URL 改写回坏值"回滚
+- **S3 镜像**（可选，四项配置齐全才启用）：兜底取到的外源图先镜像进用户自有 S3 兼容桶（RustFS/MinIO，path-style + SigV4），`poster_url` 写桶 URL；桶暂不可达降级直写外源 URL。凭据只存本地 settings.json，不进 git
+- **ATS 唯一豁免**：打包脚本 Info.plist 注入 `NSAllowsLocalNetworking`（仅放行局域网私有 IP/.local），不得扩大到任何公网域
 
 ## 目录与职责
 

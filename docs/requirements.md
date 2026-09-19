@@ -183,6 +183,8 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
   - **ATS 合规**：桶端点为局域网 http（如 `http://192.168.1.10:9000`）时由 Info.plist `NSAllowsLocalNetworking` 豁免——Apple 官方 ATS 例外，仅放行本地网络（RFC1918 私有 IP / .local），**不为任何第三方域开明文例外**；站方 http 图床继续一律不请求
   - **S3Client**：SigV4 签名（CryptoKit HMAC-SHA256，零第三方依赖；签名原语已与 Python 独立实现对拍一致），path-style 寻址；mirror = HEAD 探测已存在则跳过 → PUT 上传；401/403 当批停止，桶暂不可达（NAS 关机）降级直写外源 URL 不阻断
   - **配置**：settings.json 四项（endpoint/bucket/accessKey/secretKey，只存本地不进 git），设置页"S3 海报镜像"卡片；任一为空 = 关闭镜像，兜底直写外源 URL（豆瓣图需 Referer，PosterLoader 已按域名处理）
+  - **实施状态（2026-09-19 实桶对接完成）**：RustFS（用户 NAS 局域网端点）建桶 `whatshot-posters` + 匿名只读策略（仅 `s3:GetObject`）；全链路实测通过（建桶幂等 → 豆瓣图下载 → 镜像 → 匿名读回字节一致）。S3Client 首版三处实测 bug 已修：① dateStamp 派生 `dropLast(7)` 漏掉日期后的 'T'（应为 dropLast(8)，RustFS 报 invalid header）；② exists() 只看"未抛异常"，HEAD 404 被误判已存在跳过 PUT（改为显式查 `statusCode == 200`）；③ SigV4 canonical headers 块与 signed headers 之间必须有一个空行（与 botocore 对拍定位）。端点/凭据同时存项目根 `.env`（已 gitignore）与用户本机 settings.json
+  - **清偿节奏（2026-09-19）**：存量事故条目约 520 条（localhost 70 + 站方改写 http 523 的一部分），豆瓣路径稳态 30 条/轮、积压 >100 条时放宽 60 条/轮（9-19 实测两轮 30 条全 200 无 403）；手动同步无冷却可连跑加速
 
 ### 定案三：剧集页排序与日期安置（Q6-Q8，用户拍板）
 
