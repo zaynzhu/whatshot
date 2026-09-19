@@ -9,6 +9,8 @@ struct ChartTabView: View {
   @State private var movements: [Int: VideoRepository.ChartMovement] = [:]
   @State private var lastUpdated: Date?
   @State private var loading = false
+  /// 详情浮层目标（定案七：榜单卡片与剧集/电影列表同入口）
+  @State private var detailTarget: VideoRepository.VideoRow?
 
   // 单元格顶对齐：电影卡（无集数行）比剧集卡矮时海报仍与邻居齐平
   private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)]
@@ -72,11 +74,13 @@ struct ChartTabView: View {
             VStack(alignment: .leading, spacing: 0) {
               if heroShown, let first = rows.first {
                 HeroCard(video: first.video, scope: scope)
+                  .onTapGesture { detailTarget = first.video }
                   .padding(.bottom, 30)
               }
               LazyVGrid(columns: columns, spacing: 18) {
                 ForEach(heroShown ? Array(rows.dropFirst()) : rows, id: \.video.id) { row in
                   GalleryCard(video: row.video, rank: row.rank, movement: movements[row.video.id])
+                    .onTapGesture { detailTarget = row.video }
                 }
               }
             }
@@ -91,6 +95,9 @@ struct ChartTabView: View {
     // 同步完成后重载：榜单数据与名次变化都可能更新
     .onChange(of: app.lastSummary) { _, _ in
       Task { await reload() }
+    }
+    .sheet(item: $detailTarget) { target in
+      DetailSheet(video: target, repo: app.repo)
     }
   }
 

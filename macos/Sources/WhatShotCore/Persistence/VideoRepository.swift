@@ -220,9 +220,15 @@ public struct VideoRepository: Sendable {
     case ended = "已完结"
   }
 
+  /// LIKE 通配符转义（\ % _）：用户搜索词含 % 或 _ 时不被当通配符，语义是字面匹配
+  static func escapeLike(_ raw: String) -> String {
+    raw.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "%", with: "\\%")
+      .replacingOccurrences(of: "_", with: "\\_")
+  }
+
   /// 年代档位 → 年份区间映射（对齐但ai0 字典 t3：近三年/2026…2017/20年代…更早）
-  static func yearRange(for bucket: String, now: Date = Date()) -> (low: Int, high: Int)? {
-    // 1. 特殊档位
+  static func yearRange(for bucket: String, now: Date = Date()) -> (low: Int, high: Int)? {    // 1. 特殊档位
     let calendar = Calendar(identifier: .gregorian)
     let currentYear = calendar.component(.year, from: now)
     if bucket == "近三年" { return (currentYear - 2, currentYear) }
@@ -243,12 +249,21 @@ public struct VideoRepository: Sendable {
   }
 
   /// 列表查询（分页懒加载）。排序与筛选由调用方指定。
-  /// 首播排序：日期降序（未来日期照排在前，定案 Q8）；未知日期排尾按资源更新次序（定案 Q7）
+  /// 首播排序：日期降序（未来日期照排在前，定案 Q8）；未知日期排尾按资源更新次序（定案 Q7）。
+  /// query = 本地搜索（定案七）：片名/原名/别名 LIKE，纯本地不触发外部标题搜索
   public func listVideos(kind: ButaiKind, limit: Int, offset: Int,
-                         sort: ListSort = .seedUpdated, filter: ListFilter = ListFilter()) async throws -> [VideoRow] {
+                         sort: ListSort = .seedUpdated, filter: ListFilter = ListFilter(),
+                         query: String? = nil) async throws -> [VideoRow] {
     // WHERE 片段构造
     var conditions: [String] = ["kind = ?"]
     var binds: [Any?] = [kind.rawValue]
+    if let q = query?.trimmingCharacters(in: .whitespaces), !q.isEmpty {
+      let pattern = "%\(Self.escapeLike(q))%"
+      conditions.append("(title LIKE ? ESCAPE '\\' OR COALESCE(otitle, '') LIKE ? ESCAPE '\\' OR COALESCE(alias, '') LIKE ? ESCAPE '\\')")
+      binds.append(pattern)
+      binds.append(pattern)
+      binds.append(pattern)
+    }
     if let years = filter.years, let range = Self.yearRange(for: years) {
       conditions.append("CAST(COALESCE(years, '0') AS INTEGER) BETWEEN ? AND ?")
       binds.append(range.low)

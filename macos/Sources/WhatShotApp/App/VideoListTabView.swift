@@ -33,6 +33,11 @@ struct VideoGridTabView: View {
   @State private var sort: VideoRepository.ListSort
   /// 筛选状态不跨启动持久化（定案 Q9-round1），每次进入默认全量
   @State private var filter = VideoRepository.ListFilter()
+  /// 本地搜索（定案七）：searchText 是输入框即时值，searchQuery 防抖后参与查询；不跨启动持久化
+  @State private var searchText = ""
+  @State private var searchQuery = ""
+  @State private var searchToken = UUID()
+  @FocusState private var searchFocused: Bool
   private let pageSize = 60
 
   init(kind: ButaiKind) {
@@ -94,6 +99,20 @@ struct VideoGridTabView: View {
     .onChange(of: app.lastSummary) { _, _ in
       Task { await reloadFromScratch() }
     }
+    // ⌘F 聚焦搜索：隐藏按钮只承担快捷键注册
+    .background(
+      Button { searchFocused = true } label: { EmptyView() }
+        .keyboardShortcut("f", modifiers: .command)
+    )
+    .onChange(of: searchText) { _, next in
+      let token = UUID()
+      searchToken = token
+      Task {
+        try? await Task.sleep(nanoseconds: 250_000_000) // 防抖：停止输入才触发重查
+        guard searchToken == token else { return }
+        searchQuery = next
+      }
+    }
   }
 
   // MARK: - 杂志目录式筛选条（与 eyebrow 同源的文字层级，弃用系统控件灰）
@@ -110,6 +129,8 @@ struct VideoGridTabView: View {
 
         Spacer(minLength: 14)
 
+        searchField
+
         SortTail(
           kinds: kind == .tvSeries ? [.premiere, .seedUpdated] : [.seedUpdated],
           selection: sort
@@ -117,6 +138,39 @@ struct VideoGridTabView: View {
       }
       .padding(.horizontal, 20)
     }
+  }
+
+  /// 搜索框：与筛选条同语言（bg 底 + hairline 描边），⌘F 聚焦
+  private var searchField: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(searchFocused ? Theme.accent : Theme.textTertiary)
+      TextField("搜索 片名/原名/别名", text: $searchText)
+        .textFieldStyle(.plain)
+        .font(.system(size: 11.5))
+        .foregroundStyle(Theme.textPrimary)
+        .focused($searchFocused)
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+          searchFocused = false
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 10))
+            .foregroundStyle(Theme.textTertiary)
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(Theme.bg, in: RoundedRectangle(cornerRadius: Theme.radiusControl))
+    .overlay(
+      RoundedRectangle(cornerRadius: Theme.radiusControl)
+        .stroke(searchFocused ? Theme.accent.opacity(0.55) : Theme.hairline, lineWidth: 1)
+    )
+    .frame(width: 190)
   }
 
   private var railSeparator: some View {
@@ -176,12 +230,21 @@ struct VideoGridTabView: View {
       Image(systemName: kind == .movie ? "film" : "tv")
         .font(.system(size: 34, weight: .light))
         .foregroundStyle(Theme.textTertiary)
-      Text(filter.isEmpty ? "暂无数据" : "没有符合条件的条目")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(Theme.textSecondary)
-      Text(filter.isEmpty ? "点击右上角「同步」拉取数据" : "试试放宽筛选条件")
-        .font(.system(size: 11.5))
-        .foregroundStyle(Theme.textTertiary)
+      if !searchQuery.isEmpty {
+        Text("没有找到「\(searchQuery)」相关作品")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(Theme.textSecondary)
+        Text("只搜索已同步到本地的内容 · 试试更短的关键词")
+          .font(.system(size: 11.5))
+          .foregroundStyle(Theme.textTertiary)
+      } else {
+        Text(filter.isEmpty ? "暂无数据" : "没有符合条件的条目")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(Theme.textSecondary)
+        Text(filter.isEmpty ? "点击右上角「同步」拉取数据" : "试试放宽筛选条件")
+          .font(.system(size: 11.5))
+          .foregroundStyle(Theme.textTertiary)
+      }
       if !filter.isEmpty {
         Button("清除筛选条件") { filter = VideoRepository.ListFilter() }
           .font(.system(size: 11))
@@ -227,9 +290,9 @@ struct VideoGridTabView: View {
   /// 详情浮层目标（sheet 需要 Identifiable）
   @State private var detailTarget: VideoRepository.VideoRow?
 
-  /// 任务 key：数据库就绪、排序/筛选变化都整页重载（repo nil→就位翻转让首屏等库就绪再加载）
+  /// 任务 key：数据库就绪、排序/筛选/搜索变化都整页重载（repo nil→就位翻转让首屏等库就绪再加载）
   private var reloadKey: String {
-    "\(app.repo != nil)-\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
+    "\(app.repo != nil)-\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")-\(searchQuery)"
   }
 
   /// 重载代数：同步触发的重载与在途分页请求并发时，旧请求的结果按代数作废，
@@ -249,7 +312,9 @@ struct VideoGridTabView: View {
     loading = true
     defer { loading = false }
     let epoch = loadEpoch
-    let next = (try? await repo.listVideos(kind: kind, limit: pageSize, offset: page * pageSize, sort: sort, filter: filter)) ?? []
+    let next = (try? await repo.listVideos(kind: kind, limit: pageSize, offset: page * pageSize,
+                                           sort: sort, filter: filter,
+                                           query: searchQuery.isEmpty ? nil : searchQuery)) ?? []
     guard epoch == loadEpoch else { return } // 期间发生过重载，旧页结果丢弃
     page += 1
     rows.append(contentsOf: next)
