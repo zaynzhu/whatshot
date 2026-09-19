@@ -378,7 +378,9 @@ public struct SyncEngine: Sendable {
   public var s3: S3Client?
 
   /// 把外源海报镜像到 S3 桶。返回应写库的 URL（桶 URL）；镜像失败/未配 S3 返回原 URL。
-  /// 桶是持久层：上传失败不阻断兜底（降级直写外源 URL），S3 401/403 抛 unauthorized 停批
+  /// 桶是持久层：上传失败不阻断兜底（降级直写外源 URL），S3 401/403 抛 unauthorized 停批。
+  /// 降级写的外源 https 下轮仍满足待镜像候选（posterBackfillCandidates 的 https 分支），
+  /// 桶恢复后自动补做镜像
   private func mirrorPosterIfNeeded(sourceURL: String, videoID: Int) async throws -> String {
     guard let s3Client = s3 else { return sourceURL }
     // 已是桶 URL 的不重复镜像（防兜底循环上传）
@@ -408,10 +410,11 @@ public struct SyncEngine: Sendable {
   }
 
   /// TMDB 海报兜底：对候选里带 IMDb 的条目取 poster_path，拼 w500 URL 写库。
-  /// 写库只补坏 URL（空/localhost/http），站方中途修好则跳过；无匹配留待下轮豆瓣路径。
-  /// 配置了 S3 时图先镜像到桶、写桶 URL
+  /// 写库只补坏 URL（空/localhost/http，配 S3 时含待镜像 https），站方中途修好则跳过；
+  /// 无匹配留待下轮豆瓣路径。配置了 S3 时图先镜像到桶、写桶 URL
   func backfillPostersViaTmdb(tmdb: TmdbClient) async -> PremiereBackfillSummary {
-    let candidates = (try? await repo.posterBackfillCandidates(limit: 200)) ?? []
+    let mirrorPrefix = s3.map { "\($0.endpoint)/\($0.bucket)/" }
+    let candidates = (try? await repo.posterBackfillCandidates(limit: 200, mirrorPrefix: mirrorPrefix)) ?? []
     let withImdb = candidates.filter { let imdb = $0.imdb; return imdb != nil && imdb?.hasPrefix("tt") == true }
     guard !withImdb.isEmpty else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
     var withDate = 0
@@ -422,7 +425,8 @@ public struct SyncEngine: Sendable {
         guard let path = try await tmdb.fetchPosterPath(imdbId: imdb) else { continue }
         let source = "https://image.tmdb.org/t/p/w500\(path)"
         let url = try await mirrorPosterIfNeeded(sourceURL: source, videoID: candidate.id)
-        let wrote = try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock())
+        let wrote = try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock(),
+                                                     allowHttpsOverwrite: s3 != nil)
         if wrote { withDate += 1 }
       } catch TmdbClient.TmdbError.unauthorized {
         blocked = "TMDB API Key 无效(401)，海报兜底中止；已补 \(withDate) 条"
@@ -442,7 +446,8 @@ public struct SyncEngine: Sendable {
   /// 请求写 douban_requests 观测表（outcome=poster_got/poster_404），403/429 停批不绕过。
   /// 配置了 S3 时图先镜像到桶、写桶 URL
   func backfillPostersViaDouban(douban: DoubanClient, runId: Int = 0) async -> PremiereBackfillSummary {
-    let candidates = (try? await repo.posterBackfillCandidates(limit: 200)) ?? []
+    let mirrorPrefix = s3.map { "\($0.endpoint)/\($0.bucket)/" }
+    let candidates = (try? await repo.posterBackfillCandidates(limit: 200, mirrorPrefix: mirrorPrefix)) ?? []
     let needDouban = candidates.filter { ($0.imdb == nil || $0.imdb?.hasPrefix("tt") != true) && $0.doubanId != nil && $0.doubanId! > 0 }
     guard !needDouban.isEmpty else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
     // 积压清偿：坏 URL 存量超过阈值时放宽本轮上限（新条目稳态用小步）
@@ -458,7 +463,8 @@ public struct SyncEngine: Sendable {
           continue
         }
         let url = try await mirrorPosterIfNeeded(sourceURL: source, videoID: candidate.id)
-        if try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock()) {
+        if try await repo.setPosterBackfill(videoID: candidate.id, url: url, at: clock(),
+                                            allowHttpsOverwrite: s3 != nil) {
           withDate += 1
         }
         try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: 200,

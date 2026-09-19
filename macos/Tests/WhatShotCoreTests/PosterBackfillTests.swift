@@ -317,4 +317,130 @@ struct PosterBackfillTests {
     S3CreateBucketStubURLProtocol.responseStatus = 409
     try await client.createBucket() // 已存在：不抛
   }
+
+  // MARK: - S3 镜像候选语义（2026-09-20）：桶 URL 出队，外源 https 待镜像
+
+  @Test func candidatesMirrorSemantics() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    let bucketURL = "http://192.168.1.10:9000/whatshot-posters/posters/1.jpg"
+    // 已镜像条目：先空图入库再 setPosterBackfill 写桶 URL（upsert 的 CASE 会拒 http 形态）
+    _ = try await repo.upsert(makeVideo(id: 1, poster: nil), chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.setPosterBackfill(videoID: 1, url: bucketURL, at: now)
+    _ = try await repo.upsert(makeVideo(id: 2, poster: "https://image.tmdb.org/t/p/w500/a.jpg"), chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.upsert(makeVideo(id: 3, poster: "http://img.mvinfo.homes/x.jpg"), chartScope: nil, chartRank: nil, now: now)
+
+    // 配置 S3：桶 URL 出队（不再每轮重复补图）；外源 https 待镜像（降级条目的重试入口）；站方 http 照旧
+    let withS3 = try await repo.posterBackfillCandidates(limit: 10, mirrorPrefix: "http://192.168.1.10:9000/whatshot-posters/")
+    let ids = withS3.map(\.id)
+    #expect(!ids.contains(1))
+    #expect(ids.contains(2))
+    #expect(ids.contains(3))
+
+    // 未配 S3：原口径只收坏图；撤销 S3 后旧桶 URL（http 形态）回到队列，兜底重新补图自愈
+    let withoutS3 = try await repo.posterBackfillCandidates(limit: 10)
+    let plainIds = withoutS3.map(\.id)
+    #expect(plainIds.contains(1))
+    #expect(!plainIds.contains(2))
+    #expect(plainIds.contains(3))
+  }
+
+  /// 写库门控：https 现值默认不动（站方好 URL 保护同口径）；配置 S3 后视为待镜像可改写为桶 URL
+  @Test func writePosterHttpsOverwriteGatedByS3() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    _ = try await repo.upsert(makeVideo(id: 1, poster: nil), chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.setPosterBackfill(videoID: 1, url: "https://image.tmdb.org/t/p/w500/a.jpg", at: now)
+
+    let bucketURL = "http://192.168.1.10:9000/whatshot-posters/posters/1.jpg"
+    let rejected = try await repo.setPosterBackfill(videoID: 1, url: bucketURL, at: now)
+    #expect(rejected == false)
+    #expect(try await poster(of: 1, repo: repo) == "https://image.tmdb.org/t/p/w500/a.jpg")
+
+    let wrote = try await repo.setPosterBackfill(videoID: 1, url: bucketURL, at: now, allowHttpsOverwrite: true)
+    #expect(wrote == true)
+    #expect(try await poster(of: 1, repo: repo) == bucketURL)
+  }
+
+  // MARK: - 引擎镜像全链路：降级 → 恢复补镜像 → 幂等出队
+
+  /// TMDB /find + image.tmdb 源图 + S3 HEAD/PUT 三 host 分发；S3 PUT 状态可切换模拟桶故障/恢复
+  final class MirrorStubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var s3PutStatus = 200
+    nonisolated(unsafe) static var seenS3Methods: [String] = []
+    static func makeSession() -> URLSession {
+      let config = URLSessionConfiguration.ephemeral
+      config.protocolClasses = [MirrorStubURLProtocol.self]
+      return URLSession(configuration: config)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+      guard let url = request.url, let method = request.httpMethod else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+        return
+      }
+      let status: Int
+      let body: Data
+      let headers: [String: String]?
+      if url.host?.contains("api.themoviedb") == true {
+        status = 200
+        body = Data(#"{"movie_results":[{"poster_path":"/rayAREIKtSinuov10GvrZHyXfXH.jpg"}],"tv_results":[],"tv_episode_results":[]}"#.utf8)
+        headers = nil
+      } else if url.host?.contains("image.tmdb") == true {
+        status = 200
+        body = Data([0xFF, 0xD8, 0xFF, 0xE0]) // 源图字节（非空 + Content-Type 才过 mirrorPosterIfNeeded 门槛）
+        headers = ["Content-Type": "image/jpeg"]
+      } else {
+        Self.seenS3Methods.append(method)
+        status = method == "HEAD" ? 404 : Self.s3PutStatus // 对象不存在 → 走 PUT，状态由测试控制
+        body = Data()
+        headers = nil
+      }
+      guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers) else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+        return
+      }
+      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+      client?.urlProtocol(self, didLoad: body)
+      client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+  }
+
+  /// 三轮链路：桶故障降级写外源 → 桶恢复后降级条目自动补镜像为桶 URL → 已镜像条目出队不再触发
+  @Test func engineMirrorDegradeRetryAndSettle() async throws {
+    MirrorStubURLProtocol.s3PutStatus = 200
+    MirrorStubURLProtocol.seenS3Methods = []
+    let repo = try makeRepo()
+    let now = Date()
+    _ = try await repo.upsert(makeVideo(id: 1, poster: "http://localhost:3000/a.jpg", imdb: "tt111"), chartScope: nil, chartRank: nil, now: now)
+
+    let tmdb = TmdbClient(apiKey: "k", limiter: RateLimiter(interval: 0), session: MirrorStubURLProtocol.makeSession())
+    let s3 = S3Client(endpoint: "http://192.168.1.10:9000", bucket: "whatshot-posters",
+                      accessKey: "AKIA_TEST", secretKey: "SECRET_TEST",
+                      session: MirrorStubURLProtocol.makeSession())
+    let engine = SyncEngine(client: ButaiClient(baseURL: "https://www.butai0.club", limiter: RateLimiter(interval: 0), session: MirrorStubURLProtocol.makeSession()),
+                            repo: repo,
+                            settings: ButaiSettings(baseURL: "https://www.butai0.club", syncIntervalHours: 6, posterCacheLimitMB: 300, movieListPages: 1, tvListPages: 1),
+                            tmdb: tmdb, s3: s3)
+
+    // 第一轮：桶故障（PUT 500）→ 降级直写外源 https，图仍可显示
+    MirrorStubURLProtocol.s3PutStatus = 500
+    let degraded = await engine.backfillPostersViaTmdb(tmdb: tmdb)
+    #expect(degraded.withDate == 1)
+    #expect(try await poster(of: 1, repo: repo) == "https://image.tmdb.org/t/p/w500/rayAREIKtSinuov10GvrZHyXfXH.jpg")
+
+    // 第二轮：桶恢复 → 降级写的外源 https 重新进候选（待镜像），改写为桶 URL
+    MirrorStubURLProtocol.s3PutStatus = 200
+    let recovered = await engine.backfillPostersViaTmdb(tmdb: tmdb)
+    #expect(recovered.withDate == 1)
+    #expect(try await poster(of: 1, repo: repo) == "http://192.168.1.10:9000/whatshot-posters/posters/1.jpg")
+
+    // 第三轮：已镜像（桶 URL）出队，不再产生任何写库动作
+    let settled = await engine.backfillPostersViaTmdb(tmdb: tmdb)
+    #expect(settled.withDate == 0)
+  }
 }
