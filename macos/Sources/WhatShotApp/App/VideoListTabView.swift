@@ -88,9 +88,11 @@ struct VideoGridTabView: View {
     }
     .background(Theme.bg)
     .task(id: reloadKey) {
-      page = 0
-      rows = []
-      await loadMore()
+      await reloadFromScratch()
+    }
+    // 同步完成后重载当前列表（与 ChartTabView 同源信号）：集数、海报兜底结果无需切页可见
+    .onChange(of: app.lastSummary) { _, _ in
+      Task { await reloadFromScratch() }
     }
   }
 
@@ -225,16 +227,30 @@ struct VideoGridTabView: View {
   /// 详情浮层目标（sheet 需要 Identifiable）
   @State private var detailTarget: VideoRepository.VideoRow?
 
-  /// 任务 key：任何排序/筛选变化都整页重载
+  /// 任务 key：数据库就绪、排序/筛选变化都整页重载（repo nil→就位翻转让首屏等库就绪再加载）
   private var reloadKey: String {
-    "\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
+    "\(app.repo != nil)-\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")"
+  }
+
+  /// 重载代数：同步触发的重载与在途分页请求并发时，旧请求的结果按代数作废，
+  /// 不混入清空后的 rows（.task(id:) 只取消自己启动的任务，管不到 onChange 的 Task）
+  @State private var loadEpoch = 0
+
+  /// 整页重载：回第一页。同步完成后浏览位置回到页首——手动同步本就期待看到新数据
+  func reloadFromScratch() async {
+    loadEpoch += 1
+    page = 0
+    rows = []
+    await loadMore()
   }
 
   func loadMore() async {
     guard !loading, let repo = app.repo else { return }
     loading = true
     defer { loading = false }
+    let epoch = loadEpoch
     let next = (try? await repo.listVideos(kind: kind, limit: pageSize, offset: page * pageSize, sort: sort, filter: filter)) ?? []
+    guard epoch == loadEpoch else { return } // 期间发生过重载，旧页结果丢弃
     page += 1
     rows.append(contentsOf: next)
   }
