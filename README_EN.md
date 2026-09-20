@@ -24,13 +24,14 @@
 
 - **Three chart windows** -- Recent / weekly / monthly hot charts, with a hero card for the #1 title; each chart shows its own last-updated time and refresh status, plus per-card rank movement badges (NEW / up / down)
 - **Episode progress tracking** -- "Up to episode 9", "24 total", "Completed" as a dedicated info row with a visual progress line
-- **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout
+- **Series & movie galleries** -- Browse recently updated titles in a poster-wall grid with adaptive layout; ⌘F searches titles / original names / aliases locally, combined with filters and sorting (searches synced content only, no external title lookup)
 - **Premiere timeline** -- Series sorted by premiere date (re-seeded classics no longer surface), with year / status / genre / region filters and a detail sheet (synopsis, cast, episode-progress log, Douban / IMDb links). **Dual-source premiere backfill**: Douban fills premiere dates via existing douban_id (no key needed); when Douban is rate-limited, an optional TMDB fallback fills the per-season premiere date for Western series that have an IMDb ID (never overwrites a Douban-written date; requires a TMDB Bearer Token in Settings)
 - **Poster backfill & S3 mirror** -- For entries whose site-side image host went dark (plaintext HTTP blocked by macOS ATS), posters are backfilled from Douban/TMDB automatically; with your own S3-compatible storage (RustFS/MinIO) configured, fetched posters are mirrored into your bucket before display, removing the dependency on third-party image hosts (endpoint/bucket/keys in Settings; LAN endpoints ride macOS local-networking exemption)
+- **Watchlist & update digest** -- One-click follow in the detail sheet; a dedicated "追剧" (Watchlist) tab shows latest episodes, completion status and last check time. Titles that drop off the charts are still checked each sync round (up to 20 per run, least-recently-checked first); episode changes since your last visit (e.g. "up to 9 → up to 12") are summarized at the top, with a tab dot that clears on visit
 - **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
-- **Transparent sync status** -- The header status distinguishes "synced / partially completed / failed" and ages over time; click to expand a per-step breakdown (per-chart and backfill results, error details and retry notes) — minor hiccups like Douban rate-limiting no longer masquerade as failures
+- **Transparent sync status** -- The header status distinguishes "synced / partially completed / failed / stopped" and ages over time; the live phase and backfill counters show while syncing, and you can stop a run anytime (committed data is kept, remaining backfills resume next round); click the status to expand a per-step breakdown (per-chart and backfill results, error details and retry notes) — minor hiccups like Douban rate-limiting no longer masquerade as failures
 - **Data-source resilience** -- domains auto-discovered from the publish page (with a built-in fallback pool), probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
 - **Late-night gallery design** -- Dark monochrome-amber visual language, editorial typography, pure native SwiftUI
 
@@ -66,7 +67,7 @@ swift build --package-path macos --configuration release
 **Run tests**
 
 ```bash
-./scripts/test-macos.sh   # Swift Testing, 32 tests
+./scripts/test-macos.sh   # Swift Testing suite
 ```
 
 Dependencies: zero third-party — system `sqlite3` C library for storage, `URLSession` for networking, native SwiftUI for UI.
@@ -79,7 +80,11 @@ The app opens on the "热门榜" (Charts) tab: switch between recent / weekly / 
 
 **Follow series updates**
 
-Switch to the "剧集" (Series) tab, sorted by **premiere date** by default (switchable to resource-update time). Cards show the title, up-to-episode status (amber = ongoing), premiere date and Douban / IMDb ratings; the filter rail offers year / airing status / genre / region; click a card for the detail sheet (synopsis, cast, episode-progress log, external links); scroll to the bottom to lazy-load more.
+Switch to the "剧集" (Series) tab, sorted by **premiere date** by default (switchable to resource-update time). Cards show the title, up-to-episode status (amber = ongoing), premiere date and Douban / IMDb ratings; the filter rail offers year / airing status (ongoing / completed) / genre / region; ⌘F opens local search (title / original name / alias, combined with filters); click a card for the detail sheet (synopsis, cast, episode-progress log, external links); scroll to the bottom to lazy-load more.
+
+**Follow titles & digest updates**
+
+Click "追剧" (Follow) in a detail sheet to watch a title; the "追剧" (Watchlist) tab keeps your followed titles with latest episodes, completion status and last check time. Titles that drop off the charts and recent-update pages are still checked automatically each sync round. Titles whose episode count changed since your last visit are summarized at the top ("up to 9 → up to 12 · local discovery time"), with a tab dot that clears as you enter the page.
 
 **Tune sync & cache**
 
