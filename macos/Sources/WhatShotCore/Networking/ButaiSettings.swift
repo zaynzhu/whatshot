@@ -27,6 +27,12 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
   public var s3Bucket: String?
   public var s3AccessKey: String?
   public var s3SecretKey: String?
+  /// WhatsNew 外部热度（2026-09-22 可选接入）：用户自有 WhatsNew 服务基址（NAS/局域网，
+  /// 如 http://192.168.1.10:19993）。nil/空 = 未配置；enabled 显式 true 才发请求。
+  /// 地址只存本地 settings.json，不进 git、不上传、不打日志
+  public var whatsnewBaseURL: String?
+  /// 显式开关（nil = 关闭）；baseURL 与 enabled 任一不满足时整步跳过零请求
+  public var whatsnewEnabled: Bool?
 
   /// S3 镜像是否启用（四项配置齐全才开）
   public var s3MirrorEnabled: Bool {
@@ -43,10 +49,12 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
     movieListPages: 3,
     tvListPages: 3,
     tmdbApiKey: nil,
+    whatsnewBaseURL: nil, whatsnewEnabled: nil,
     s3Endpoint: nil, s3Bucket: nil, s3AccessKey: nil, s3SecretKey: nil
   )
 
   public init(baseURL: String, pinnedDomain: String? = nil, syncIntervalHours: Int, posterCacheLimitMB: Int, movieListPages: Int, tvListPages: Int, tmdbApiKey: String? = nil,
+              whatsnewBaseURL: String? = nil, whatsnewEnabled: Bool? = nil,
               s3Endpoint: String? = nil, s3Bucket: String? = nil, s3AccessKey: String? = nil, s3SecretKey: String? = nil) {
     self.baseURL = baseURL
     self.pinnedDomain = pinnedDomain
@@ -55,6 +63,8 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
     self.movieListPages = movieListPages
     self.tvListPages = tvListPages
     self.tmdbApiKey = tmdbApiKey
+    self.whatsnewBaseURL = whatsnewBaseURL
+    self.whatsnewEnabled = whatsnewEnabled
     self.s3Endpoint = s3Endpoint
     self.s3Bucket = s3Bucket
     self.s3AccessKey = s3AccessKey

@@ -180,6 +180,47 @@ enum Schema {
     video_id INTEGER PRIMARY KEY REFERENCES videos(id),
     created_at INTEGER NOT NULL            -- 关注时刻：更新汇总的水位起点（关注前历史不报，定案七）
   );
+
+  CREATE TABLE IF NOT EXISTS external_heat (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_id TEXT NOT NULL,            -- WhatsNew 内部作品 ID（cuid）
+    source TEXT NOT NULL,              -- 信号来源，如 trakt_trending / netflix_top10
+    source_category TEXT,
+    platform TEXT,
+    region TEXT,
+    window TEXT NOT NULL DEFAULT '',
+    ranking_scope TEXT NOT NULL DEFAULT 'overall',
+    ranking_entry_key TEXT NOT NULL DEFAULT 'work',  -- 季/版本载体：不同 key = 合法多席位，不按作品去重
+    ranking_entry_label TEXT,
+    rank INTEGER,
+    previous_rank INTEGER,
+    rank_delta INTEGER,
+    value_label TEXT,
+    captured_at TEXT,                  -- 站方采集时间（ISO 原样保留，不冒充本地时间）
+    is_current INTEGER NOT NULL DEFAULT 1,
+    movement TEXT,
+    -- WhatsNew 作品标量（未关联本地条目时展示用）
+    media_title TEXT NOT NULL DEFAULT '',
+    media_type TEXT,
+    poster_url TEXT,
+    first_release_date TEXT,
+    -- 匹配结果：video_id NULL = 未关联（精确 ID 匹配不上，不用标题猜）
+    video_id INTEGER REFERENCES videos(id),
+    match_basis TEXT,                  -- imdb / douban
+    fetched_at INTEGER NOT NULL,       -- 本地发现时间戳
+    UNIQUE(media_id, source, ranking_scope, window, ranking_entry_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ext_heat_video ON external_heat(video_id);
+  CREATE INDEX IF NOT EXISTS idx_ext_heat_fetched ON external_heat(fetched_at);
+
+  CREATE TABLE IF NOT EXISTS external_heat_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_success_at INTEGER,           -- 最近一次成功响应的本地时间
+    last_status TEXT NOT NULL DEFAULT 'never',  -- never/ok/unreachable/bad_service/invalid_response
+    last_error TEXT,
+    last_signal_count INTEGER,         -- 最近一次成功响应的信号条数
+    last_media_count INTEGER           -- 其中不重复作品数（覆盖范围可解释性）
+  );
   """
 
   static func migrate(_ db: SQLiteDatabase) throws {
