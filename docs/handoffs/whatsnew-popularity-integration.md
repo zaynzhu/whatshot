@@ -5,7 +5,7 @@
 - 交接类型：发送端，设计转执行；下一位角色：WhatShot 执行 agent，完成后交回审查。
 - 用户目标：先用现有追剧关注喜欢的作品，再引入 WhatsNew 的其他来源热度作为发现作品的补充。用户认为 butai0 榜单不够准确；不要把本任务替换成给现有榜单加热门标签。
 - 授权依据：用户要求“按照你思考的写一个交接给这个项目干活的 agent，让他接入，然后也说清楚实际问题”。已明确接入方向，无需再次询问是否开始 WhatShot 接入；具体界面、协议细节仍可按证据调整。
-- 当前状态：仅完成源码与文档核对，没有实现接入，没有读取真实追剧清单或访问 NAS API。
+- 当前状态：**已实现并本机交付（2026-09-22 执行回执见文末）**。真实 WhatsNew 服务联调仍未验证（无可用服务地址）。
 - 第一步：核对两仓库状态与规则，确定实际可用的 WhatsNew API、身份字段和数据覆盖；随后在 WhatShot 更新需求、实现可选接入、验证并打包。
 - 建议完成标准：用户可配置自己的 WhatsNew 服务，在 WhatShot 查看有来源和时间的外部榜单信号；可靠匹配时关联本地作品，离线不影响追剧与原同步。真实覆盖与未匹配项如实交回，不能以模拟响应代替真实联调成功。
 
@@ -132,3 +132,33 @@ WhatsNew 的作品可能按系列归并，`Release.seasonNumber` 和热度信号
 5. 无本 skill 或指定工具也可按上述步骤使用等价能力；无法验证时如实记录，不能把 mock、代码存在或编译通过写成真实联调通过。
 6. 按项目规则，每个独立任务验证后以 `type: 中文描述` 提交。完成或受阻交回：改动与 commit、真实 API 契约、覆盖统计与局限、身份/季匹配规则、数据新鲜度策略、测试结果、打包位置、未验证项、跨项目待办和建议下一位角色（默认只读审查）。
 7. 获文档写权限时先读当前版本再更新本文件为实际状态，保留有效决定；仅只读权限时在回复中提供回执。无需逐步回写，不自动生成新任务或推送发布。
+
+## 执行回执（2026-09-22，接手 agent 完成）
+
+**已提交（WhatShot main，分支无推送）**：
+
+| commit | 内容 |
+|---|---|
+| `8603a83` | feat: WhatsNew 客户端（`WhatsNewClient.swift`：health 验证/trending/detail 三端点、独立 2s 限频、容错解码）、匹配器 `ExternalHeatMatcher`（IMDb/豆瓣精确相等、电影剧集隔离、双 ID 冲突不选、不做标题匹配与季推断）、`ExternalHeatStore` 快照持久化（UNIQUE 席位 upsert、截断不清缓存）、库表 `external_heat`/`external_heat_state`、设置扩展 `whatsnewBaseURL`/`whatsnewEnabled`（可选字段向后兼容旧 settings.json） |
+| `2fc9d1d` | feat: SyncEngine 可选步骤（health → trending → IMDb 直连匹配 → ≤10 条 detail 补豆瓣身份 → 二次匹配 → 事务写库；失败只计 warning 不阻断主同步）、AppModel 注入（显式启用+已配置地址才构造客户端，关闭零请求）、"外部热度"标签页（按 source 分组、来源/榜/名次/季标签、站方采集时间与本地发现时间分开展示、匹配条目进详情）、设置卡片、详情浮层"外部热度 · WhatsNew"区块 |
+| `ddff75d` | test: 引擎集成测试（URLProtocol stub 模拟服务，`@Suite(.serialized)`——并行测试共享 static stub 状态会交叉污染，已串行化） |
+| 本回执所在 commit | 定案八入库 + AGENTS/CLAUDE 最小同步 + 本回执 |
+
+**真实 API 契约（对码核对，与本文"已确认的 API 能力"一节一致）**：health 返回 `{ok, service: "whatsnew-backend", environment}`；trending 无筛选时按 heatScore 选 ≤50 部活跃作品返回全部当前信号（Prisma include 全标量，**内嵌 mediaItem 含 imdbId/tmdbId**，不含 sourceRefs）；detail 才带 `sourceRefs`（豆瓣格式 `source: "douban", sourceId: "douban-<数字>"`）；无批量身份查询端点、`/api/media` 列表不可翻页拉全库。Heat= max(0, 101-rank) 仅排序启发值，豆瓣 top/upcoming 类不参与。
+
+**匹配规则（实现定稿）**：只做稳定 ID 精确相等（IMDb 规范化小写；豆瓣经 `douban-<id>` 提取数字）；mediaType "movie"/"series" 与本地 kind 1/2 兼容映射，其他取值保守不匹配；双 ID 命中不同本地条目 → 不匹配；同系列命中不冒充该季（WhatShot 库内 imdb_number 常为"该季第 1 集"单集 tt 号，与 WhatsNew 作品级 imdbId 不相等 → 如实显示"未关联"，不做标题解析猜季）；多季同榜按 rankingEntryKey 独立席位。
+
+**新鲜度策略（实现定稿）**：`capturedAt` ISO 原样保留与本地 `fetchedAt` 分开展示，客户端取到响应的时间不冒充榜单更新时间；快照表按 UNIQUE upsert 覆盖、不删除未返回行（trending 50 条截断下"未返回"≠下榜），不预设施来源过期天数（初版不做自动失效，展示原文由用户判断）。
+
+**验证**：全量 `./scripts/test-macos.sh` 102 项（10 套）通过——含新增单元 17 项（解码/匹配含双 ID 冲突与电影剧集隔离/持久化幂等与截断保缓存/状态机）+ 引擎集成 4 项（stub 模拟服务：成功链路 2 请求全链、bad_service 拒接、unreachable 保留缓存与上次成功时间、畸形响应记状态）。**模拟 stub 是集成验证手段，不能替代真实联调**。
+
+**打包**：`/Users/zaynzhu/code/claude code/project/whatshot/dist/WhatShot.app`（ad-hoc 签名，arm64 thin，含全部接入代码；测试文件不入产物）。AppModel 冗余 await 警告为既有（本文档 120 行已记，未改源码）。
+
+**未验证项（如实）**：
+1. **真实 WhatsNew 服务联调未做**——本机无运行中 whatsnew-backend（19993/19992 均未监听，仅有 WhatsNew.app 客户端进程，其文档声明不跑本地服务）；用户 NAS 实际地址与部署版本未提供。覆盖统计（追剧命中率、未匹配比例、来源清单）待用户在设置中配置真实地址后首轮同步核对。
+2. detail 补豆瓣身份的 detail 补查路径真实响应未实测（stub 验证了容错分支）。
+3. App 内端到端交互（配置→同步→外部热度页展示→详情关联）未人工走查——建议用户装新包后自查；局域网 HTTP 连接以打包 App 实测为准（ATS 边界未新增豁免，仅既有 NSAllowsLocalNetworking）。
+
+**跨项目待办（需 WhatsNew 修改授权，本轮未动 `../whatsnew`）**：如需给任意追剧作品准确补信号（trending 50 条截断外的），建议 WhatsNew 新增有限批量按 IMDb/豆瓣 ID 查询端点，逐项返回 matched/unmatched/ambiguous 与匹配依据——协议细节见本文"必要时交回服务端接口需求"一节，由获 WhatsNew 授权的 agent 落地。
+
+**建议下一位角色**：只读审查（审查上述实现与测试、真实联调后的覆盖核对）。配置入口：设置 → "外部热度（WhatsNew）"卡片，开关 + 地址（如 `http://<NAS-IP>:19993`）。
