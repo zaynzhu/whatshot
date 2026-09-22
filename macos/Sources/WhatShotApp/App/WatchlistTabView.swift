@@ -115,6 +115,7 @@ struct WatchlistTabView: View {
         .font(.system(size: 11.5))
         .foregroundStyle(Theme.textTertiary)
     }
+    .frame(maxWidth: .infinity)
   }
 
   private var listSection: some View {

@@ -142,6 +142,7 @@ struct ExternalHeatTabView: View {
         .font(.system(size: 11.5))
         .foregroundStyle(Theme.textTertiary)
     }
+    .frame(maxWidth: .infinity)
   }
 
   // MARK: - 榜单

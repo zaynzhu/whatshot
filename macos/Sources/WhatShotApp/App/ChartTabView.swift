@@ -66,6 +66,7 @@ struct ChartTabView: View {
             .font(.system(size: 11.5))
             .foregroundStyle(Theme.textTertiary)
         }
+        .frame(maxWidth: .infinity)
         Spacer()
       } else {
         GeometryReader { geo in

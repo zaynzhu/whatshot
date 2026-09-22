@@ -253,6 +253,7 @@ struct VideoGridTabView: View {
           .padding(.top, 2)
       }
     }
+    .frame(maxWidth: .infinity)
   }
 
   private var contentGrid: some View {
