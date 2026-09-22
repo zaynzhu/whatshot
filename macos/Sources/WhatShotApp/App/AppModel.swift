@@ -126,6 +126,14 @@ public final class AppModel {
        let access = settings.s3AccessKey, let secret = settings.s3SecretKey {
       s3 = S3Client(endpoint: endpoint, bucket: bucket, accessKey: access, secretKey: secret)
     }
+    // WhatsNew 外部热度可选（2026-09-22）：显式启用 + 配置了地址才注入——
+    // 关闭或未配置时引擎整步跳过，零请求
+    var whatsnew: WhatsNewClient?
+    if settings.whatsnewEnabled == true,
+       let whatsnewURL = settings.whatsnewBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !whatsnewURL.isEmpty {
+      whatsnew = WhatsNewClient(baseURL: whatsnewURL)
+    }
     var engine = SyncEngine(
       client: ButaiClient(baseURL: probe.baseURL),
       repo: repo,
@@ -133,7 +141,8 @@ public final class AppModel {
       selector: domainSelector,
       douban: DoubanClient(), // 独立限频器，与 butai0 各自计数
       tmdb: tmdb,
-      s3: s3
+      s3: s3,
+      whatsnew: whatsnew
     )
     // 实时阶段回调：引擎在同步 Task 上执行，转发主线程展示
     engine.onProgress = { [weak self] label, count in

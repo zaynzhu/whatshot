@@ -58,6 +58,11 @@ public struct ExternalHeatStore: Sendable {
     public var matchBasis: String?
     public var fetchedAt: Date
     public var video: VideoRepository.VideoRow?
+
+    /// 稳定席位身份（UNIQUE 约束同口径）：同榜多季按 entry_key 独立席位
+    public var id: String {
+      "\(mediaID)|\(source)|\(rankingScope)|\(window)|\(rankingEntryKey)"
+    }
   }
 
   /// 连接状态（外部热度页与设置卡片展示；区分未配置/首次未取得/正常/不可达/服务不对）

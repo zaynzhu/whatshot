@@ -99,7 +99,7 @@ public struct SyncEngine: Sendable {
 
   public init(client: ButaiClient, repo: VideoRepository, settings: ButaiSettings,
               selector: DomainSelector? = nil, douban: DoubanClient? = nil, tmdb: TmdbClient? = nil,
-              s3: S3Client? = nil) {
+              s3: S3Client? = nil, whatsnew: WhatsNewClient? = nil) {
     self.client = client
     self.selector = selector
     self.repo = repo
@@ -107,6 +107,7 @@ public struct SyncEngine: Sendable {
     self.douban = douban
     self.tmdb = tmdb
     self.s3 = s3
+    self.whatsnew = whatsnew
   }
 
   /// 带域名降级的请求执行器：连续 2 次失败换域名重试一次
@@ -294,6 +295,20 @@ public struct SyncEngine: Sendable {
                                         outcome: outcome, count: summary.withDate))
     }
 
+    // 4d. 外部热度（2026-09-22 WhatsNew 可选接入）：health 验证 + trending +
+    // IMDb 直连匹配 + 有限 detail 补豆瓣身份 + 事务写库。独立 2 秒限频，
+    // 任何失败只计 warning 不阻断主同步；未配置/关闭时 whatsnew == nil 整步跳过零请求
+    if let whatsnew {
+      let summary = await syncExternalHeat(whatsnew: whatsnew)
+      if let warning = summary.warning {
+        failures.append(warning)
+      }
+      stepID += 1
+      let outcome = summary.warning == nil ? "ok" : "partial"
+      steps.append(SyncSummary.SyncStep(id: stepID, label: "外部热度",
+                                        outcome: outcome, count: summary.fetched))
+    }
+
     // 5. 历史观察裁剪（保留 90 天，豆瓣请求记录同口径）
     _ = try? await repo.pruneObservations(keepDays: 90, now: Date())
     _ = try? await repo.pruneDoubanRequests(keepDays: 90, now: Date())
@@ -417,6 +432,13 @@ public struct SyncEngine: Sendable {
   /// 配置后兜底取到的图先传桶（poster_url 改写为桶 URL）：外源图床（豆瓣 doubanio）有
   /// 防盗链/生命周期风险，自有桶是持久层，同一 key 只传一次
   public var s3: S3Client?
+
+  /// WhatsNew 外部热度客户端（2026-09-22 可选接入）：nil = 未配置/关闭，整步跳过零请求。
+  /// 独立 2 秒限频；任何失败只计 warning，不阻断主同步与追剧
+  public var whatsnew: WhatsNewClient?
+  /// 外部热度 detail 补查每轮上限（给 trending 未匹配条目补豆瓣身份），
+  /// 2 秒限频下 10 条约 20 秒——有限批量，不逐卡片触发请求风暴
+  public var whatsnewDetailBudgetPerRun = 10
 
   /// 把外源海报镜像到 S3 桶。返回应写库的 URL（桶 URL）；镜像失败/未配 S3 返回原 URL。
   /// 桶是持久层：上传失败不阻断兜底（降级直写外源 URL），S3 401/403 抛 unauthorized 停批。
@@ -558,6 +580,108 @@ public struct SyncEngine: Sendable {
       }
     }
     return (checked, failed)
+  }
+
+  /// 外部热度同步结果（复用 PremiereBackfillSummary 结构：
+  /// fetched=信号条数，withDate=匹配到本地条目数，warning=失败摘要）
+  func syncExternalHeat(whatsnew: WhatsNewClient) async -> PremiereBackfillSummary {
+    let store = ExternalHeatStore(queue: repo.queue)
+    let fetchedAt = clock()
+    do {
+      // 1. 服务身份验认：HTML、错误服务或沙箱占位都不算成功
+      _ = try await whatsnew.fetchHealth()
+
+      // 2. trending（无筛选 = 工作中心视图：≤50 部活跃作品及其全部当前信号）
+      let signals = try await whatsnew.fetchTrending()
+
+      // 3. 本地身份点查（点查 IN 命中，不全量载入——8GB 内存约束）
+      let imdbs = signals.compactMap { $0.mediaItem?.imdbId }
+      let identities = (try? await store.localIdentities(imdbs: imdbs, doubans: [])) ?? []
+      var matches: [String: ExternalHeatMatcher.Match] = [:]
+      var doubanRefs: [String: [Int]] = [:]      // mediaItemId → 豆瓣 subject 数字
+      var needDetail: [String: (imdbId: String?, mediaType: String?)] = [:]
+
+      for signal in signals {
+        guard let media = signal.mediaItem else { continue }
+        let match = ExternalHeatMatcher.match(mediaIMDb: media.imdbId,
+                                              mediaType: media.mediaType,
+                                              doubanRefs: [], local: identities)
+        if let match {
+          matches[signal.id] = match
+        } else {
+          // 未匹配：本轮对其作品（每 media 只一次）限量查 detail 补豆瓣身份
+          needDetail[media.id] = (media.imdbId, media.mediaType)
+        }
+      }
+
+      // 4. 有限 detail 补查豆瓣 refs（预算内、2 秒限频在客户端内；失败跳过该条）
+      var matchedCount = matches.values.map(\.videoID).count
+      for mediaID in needDetail.keys.prefix(whatsnewDetailBudgetPerRun) {
+        if Task.isCancelled { break }
+        guard let info = needDetail[mediaID] else { continue }
+        let refs: [WhatsNewClient.MediaDetail.SourceRef]
+        do {
+          let detail = try await whatsnew.fetchMediaDetail(id: mediaID)
+          refs = detail.sourceRefs
+        } catch {
+          continue // 单条抖动/未覆盖跳过，下轮重试；不是致命失败
+        }
+        let doubanIds = ExternalHeatMatcher.doubanIds(in: refs)
+        guard !doubanIds.isEmpty else { continue }
+        let local = (try? await store.localIdentities(imdbs: [], doubans: doubanIds)) ?? []
+        for signal in signals where signal.mediaItemId == mediaID {
+          if matches[signal.id] == nil,
+             let match = ExternalHeatMatcher.match(mediaIMDb: info.imdbId,
+                                                   mediaType: info.mediaType,
+                                                   doubanRefs: doubanIds, local: local) {
+            matches[signal.id] = match
+            matchedCount += 1
+          }
+        }
+      }
+
+      // 5. 事务写库（一个成功响应一个事务；不删除本次未返回的行——
+      // trending 50 条截断下"未返回"只能解释为范围未覆盖）
+      let rows = signals.map { signal -> ExternalHeatStore.SignalUpsert in
+        let media = signal.mediaItem
+        return ExternalHeatStore.SignalUpsert(
+          signal: signal,
+          mediaTitle: media?.titleDisplay ?? "",
+          mediaType: media?.mediaType,
+          posterURL: media?.posterURL,
+          firstReleaseDate: media?.firstReleaseDate,
+          match: matches[signal.id]
+        )
+      }
+      let wrote = try await store.upsertSignals(rows, fetchedAt: clock())
+      let mediaCount = Set(signals.map(\.mediaItemId)).count
+      try await store.setState(
+        .init(lastSuccessAt: clock(), lastStatus: "ok", lastError: nil,
+              lastSignalCount: wrote, lastMediaCount: mediaCount),
+        at: clock()
+      )
+      progress("外部热度", wrote)
+      return PremiereBackfillSummary(fetched: signals.count, withDate: matchedCount, warning: nil)
+    } catch {
+      // 失败保留上次有效缓存（不写库不清行），状态如实记录；只计 warning
+      let status: String
+      if let whatsnewError = error as? WhatsNewClient.WhatsNewError,
+         whatsnewError.message.contains("不是 WhatsNew 服务") {
+        status = "bad_service"
+      } else if error is DecodingError || "\(error)".contains("解析失败") {
+        status = "invalid_response"
+      } else {
+        status = "unreachable"
+      }
+      let previousSuccess = (try? await store.state())?.lastSuccessAt
+      try? await store.setState(
+        .init(lastSuccessAt: previousSuccess, lastStatus: status,
+              lastError: describe(error), lastSignalCount: nil, lastMediaCount: nil),
+        at: clock()
+      )
+      return PremiereBackfillSummary(fetched: 0, withDate: 0,
+                                     warning: "外部热度拉取失败（\(status)），下轮自动重试；不影响追剧与原同步")
+    }
   }
 
   func describe(_ error: Error) -> String {

@@ -142,6 +142,27 @@ struct SettingsTabView: View {
           }
         }
 
+        settingCard(title: "外部热度（WhatsNew）", icon: "chart.bar.xaxis") {
+          VStack(alignment: .leading, spacing: 10) {
+            Toggle("接入我的 WhatsNew 服务", isOn: whatsnewEnabledBinding)
+              .font(.system(size: 12.5))
+              .foregroundStyle(Theme.textPrimary)
+              .tint(Theme.accent)
+            if draft.whatsnewEnabled == true {
+              TextField("http://192.168.1.10:19993", text: whatsnewURLBinding)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13).monospacedDigit())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(fieldBackground)
+                .foregroundStyle(Theme.textPrimary)
+              Text("来自你自有的 WhatsNew 服务（NAS/局域网）的来源榜单展示，服务身份会先验证。关闭或未配置时不发任何请求；不把追剧清单或本机数据传给任何服务。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+            }
+          }
+        }
+
         settingCard(title: "缓存", icon: "internaldrive") {
           VStack(alignment: .leading, spacing: 10) {
             pickerRow(label: "海报磁盘缓存上限") {
@@ -192,6 +213,22 @@ struct SettingsTabView: View {
     Binding(
       get: { draft.tmdbApiKey ?? "" },
       set: { draft.tmdbApiKey = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0.trimmingCharacters(in: .whitespaces) }
+    )
+  }
+
+  /// 外部热度开关绑定：Bool? 语义（nil/未勾 = 关闭）
+  private var whatsnewEnabledBinding: Binding<Bool> {
+    Binding(
+      get: { draft.whatsnewEnabled == true },
+      set: { draft.whatsnewEnabled = $0 ? true : nil }
+    )
+  }
+
+  /// 外部热度地址绑定：空串↔nil（关闭）
+  private var whatsnewURLBinding: Binding<String> {
+    Binding(
+      get: { draft.whatsnewBaseURL ?? "" },
+      set: { draft.whatsnewBaseURL = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
     )
   }
 

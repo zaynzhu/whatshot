@@ -8,7 +8,7 @@ struct ContentView: View {
   @State private var tab = 0
   @State private var lastSync: Date?
 
-  private let tabs = ["热门榜", "追剧", "剧集", "电影", "设置"]
+  private let tabs = ["热门榜", "追剧", "剧集", "电影", "外部热度", "设置"]
   /// 追剧 tab 的下标：未读圆点挂它身上
   private let watchlistTabIndex = 1
 
@@ -24,6 +24,7 @@ struct ContentView: View {
         case 1: WatchlistTabView()
         case 2: TVTabView()
         case 3: MovieTabView()
+        case 4: ExternalHeatTabView()
         default: SettingsTabView()
         }
       }

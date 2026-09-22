@@ -8,8 +8,11 @@ struct DetailSheet: View {
   let video: VideoRepository.VideoRow
   let repo: VideoRepository?
   @Environment(\.dismiss) private var dismiss
+  @Environment(AppModel.self) private var app
   @State private var observations: [VideoRepository.ObservationRow] = []
   @State private var watched = false
+  /// 外部热度（2026-09-22 WhatsNew 可选接入）：匹配合作品的外部信号
+  @State private var externalSignals: [ExternalHeatStore.DisplayRow] = []
 
   var body: some View {
     HStack(alignment: .top, spacing: 18) {
@@ -60,6 +63,35 @@ struct DetailSheet: View {
 
         watchlistButton
 
+        if !externalSignals.isEmpty {
+          Rectangle().fill(Theme.hairline).frame(height: 1)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("外部热度 · WhatsNew")
+              .font(.system(size: 10, weight: .semibold).monospacedDigit())
+              .tracking(1.6)
+              .foregroundStyle(Theme.textTertiary)
+            ForEach(externalSignals, id: \.id) { signal in
+              // 来源 + 榜 + 名次：保留来源与口径，不混成统一排名；
+              // 时间是站方采集时间，不冒充本地取到的时间
+              HStack(spacing: 8) {
+                Text(signal.rank.map { "#\($0)" } ?? "—")
+                  .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                  .foregroundStyle(Theme.accent)
+                  .frame(width: 30, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                  Text(signal.source + signalRankingSuffix(signal))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                  Text("采集 " + ExternalHeatTabView.shortTime(signal.capturedAt))
+                    .font(.system(size: 9.5).monospacedDigit())
+                    .foregroundStyle(Theme.textTertiary)
+                }
+              }
+            }
+          }
+        }
+
         if !observations.isEmpty {
           Rectangle().fill(Theme.hairline).frame(height: 1)
           VStack(alignment: .leading, spacing: 4) {
@@ -103,7 +135,22 @@ struct DetailSheet: View {
     .task {
       await loadObservations()
       watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
+      await loadExternalSignals()
     }
+  }
+
+  /// 外部信号（本地快照查询，零网络请求）
+  private func loadExternalSignals() async {
+    guard let queue = app.queue else { return }
+    externalSignals = (try? await ExternalHeatStore(queue: queue).signals(forVideo: video.id)) ?? []
+  }
+
+  /// 榜口径后缀：scope/window 非 overall/空才显示（可解释来源榜）
+  private func signalRankingSuffix(_ row: ExternalHeatStore.DisplayRow) -> String {
+    var parts: [String] = []
+    if row.rankingScope != "overall" { parts.append(row.rankingScope) }
+    if let window = row.window, !window.isEmpty { parts.append(window) }
+    return parts.isEmpty ? "" : " · " + parts.joined(separator: " ")
   }
 
   // MARK: - 追剧（定案七）
