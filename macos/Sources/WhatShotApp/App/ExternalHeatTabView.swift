@@ -13,6 +13,8 @@ struct ExternalHeatTabView: View {
   @State private var state: ExternalHeatStore.State?
   @State private var loading = false
   @State private var detailTarget: VideoRepository.VideoRow?
+  /// 选中的来源榜（nil = 自动选组内最优名次的组）；不同榜单名次不可比，不提供"全部"混排
+  @State private var selectedSource: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -46,7 +48,10 @@ struct ExternalHeatTabView: View {
         emptyState
         Spacer()
       } else {
-        listSection
+        sourceChips
+          .padding(.top, 12)
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+        gridSection
       }
     }
     .background(Theme.bg)
@@ -143,65 +148,152 @@ struct ExternalHeatTabView: View {
     .frame(maxWidth: .infinity)
   }
 
-  // MARK: - 榜单
+  // MARK: - 榜单（海报网格 + 来源筛选）
 
-  /// 按 source 分组；组间按"组内最优名次"排（第一名所在的组在最前，热度优先）
-  private var listSection: some View {
+  private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)]
+
+  /// 来源 chips：单选一个来源榜（不同榜单名次不可比，不做"全部"混排）。
+  /// 默认选中"组内最优名次"的来源（热度优先）
+  private var sourceChips: some View {
     let groups = Dictionary(grouping: rows, by: \.source)
-      .map { (source: $0.key, signals: $0.value.sorted { ($0.rank ?? 999) < ($1.rank ?? 999) }) }
+      .map { (source: $0.key, signals: $0.value) }
       .sorted {
-        let l = $0.signals.first?.rank ?? 999
-        let r = $1.signals.first?.rank ?? 999
+        let l = $0.signals.compactMap(\.rank).min() ?? 999
+        let r = $1.signals.compactMap(\.rank).min() ?? 999
         return l == r ? $0.source < $1.source : l < r
       }
+    // 选中项失效（新快照来源变了）时回落展示第一名组；点击时才真正写回
+    let current = groups.contains(where: { $0.source == selectedSource }) ? selectedSource : groups.first?.source
 
-    return ScrollView {
-      LazyVStack(alignment: .leading, spacing: 20) {
+    return ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
         ForEach(groups, id: \.source) { group in
-          groupSection(group.source, signals: group.signals)
+          let selected = group.source == current
+          Button {
+            selectedSource = group.source
+          } label: {
+            HStack(spacing: 5) {
+              Text(group.source)
+                .font(.system(size: 11, weight: selected ? .bold : .medium).monospacedDigit())
+              Text("\(group.signals.count)")
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(selected ? Theme.bg : Theme.textTertiary)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 5.5)
+            .background(
+              RoundedRectangle(cornerRadius: 12)
+                .fill(selected ? Theme.accent : Theme.elevated)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 12)
+                .stroke(selected ? Theme.accent : Theme.hairline, lineWidth: 1)
+            )
+            .foregroundStyle(selected ? Theme.bg : Theme.textSecondary)
+          }
+          .buttonStyle(.plain)
         }
       }
       .padding(.horizontal, 20)
-      .padding(.vertical, 16)
+    }
+  }
+
+  /// 选中来源的网格（同剧集/电影页画廊；行内按名次排）
+  private var gridSection: some View {
+    let current = selectedSource ?? Dictionary(grouping: rows, by: \.source)
+      .min { ($0.value.compactMap(\.rank).min() ?? 999) < ($1.value.compactMap(\.rank).min() ?? 999) }?.key
+    let signals = rows.filter { $0.source == current }
+      .sorted { ($0.rank ?? 999) < ($1.rank ?? 999) }
+
+    return ScrollView {
+      LazyVGrid(columns: columns, spacing: 18) {
+        ForEach(signals, id: \.id) { row in
+          signalCard(row)
+        }
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 14)
       .padding(.bottom, 26)
     }
   }
 
-  private func groupSection(_ source: String, signals: [ExternalHeatStore.DisplayRow]) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      // 榜头：来源 + 口径摘要——保留来源与口径，不伪装成统一总榜
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        Text(source)
-          .font(.system(size: 13, weight: .heavy).monospacedDigit())
-          .foregroundStyle(Theme.accent)
-        Text(scopesLabel(signals))
-          .font(.system(size: 10.5))
-          .foregroundStyle(Theme.textTertiary)
-        Spacer()
-        Text("\(signals.count) 部")
-          .font(.system(size: 10.5).monospacedDigit())
-          .foregroundStyle(Theme.textTertiary)
-      }
-      .padding(.top, 4)
-
-      VStack(alignment: .leading, spacing: 0) {
-        ForEach(Array(signals.enumerated()), id: \.element.id) { index, row in
-          if index > 0 {
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-              .padding(.leading, 14)
-          }
-          signalRow(row)
+  /// 海报卡：名次角标（左上琥珀）+ 名次变化徽标（右上，醒目）+ 标题 + 口径行
+  private func signalCard(_ row: ExternalHeatStore.DisplayRow) -> some View {
+    let title = row.video?.title.decodingHTMLEntities ?? row.mediaTitle
+    return VStack(alignment: .leading, spacing: 6) {
+      PosterImage(url: posterURL(for: row), hovering: row.video != nil)
+        .overlay(alignment: .topLeading) {
+          // 名次：海报左上角大角标
+          Text(row.rank.map { "#\($0)" } ?? "—")
+            .font(.system(size: 13, weight: .heavy).monospacedDigit())
+            .foregroundStyle(Theme.bg)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Theme.accent, in: UnevenRoundedRectangle(topLeadingRadius: Theme.radiusPoster, bottomTrailingRadius: Theme.radiusPoster))
         }
+
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(Theme.textPrimary)
+          .lineLimit(1)
+        HStack(spacing: 6) {
+          if row.video != nil {
+            Circle().fill(Theme.accent).frame(width: 4, height: 4)
+            Text("已关联")
+          } else {
+            Text("未关联")
+          }
+          if let platform = row.platform, !platform.isEmpty {
+            Text(platform)
+          }
+          if let region = row.region, !region.isEmpty, region != "GLOBAL" {
+            Text(region)
+          }
+          if row.rankingScope != "overall" {
+            Text(row.rankingScope)
+          }
+          if let entryLabel = row.rankingEntryLabel, !entryLabel.isEmpty,
+             row.rankingEntryKey != "work" {
+            Text(entryLabel)
+          }
+        }
+        .font(.system(size: 9.5))
+        .foregroundStyle(Theme.textTertiary)
+        HStack(spacing: 6) {
+          Text("采集 \(Self.shortTime(row.capturedAt))")
+            .font(.system(size: 9.5).monospacedDigit())
+          Spacer()
+          // 名次变化：贴着采集时间放大一号，看得见
+          if let delta = row.rankDelta, delta > 0 {
+            Text("↑\(delta)")
+              .font(.system(size: 11, weight: .heavy).monospacedDigit())
+              .foregroundStyle(Theme.accent)
+          } else if let delta = row.rankDelta, delta < 0 {
+            Text("↓\(-delta)")
+              .font(.system(size: 11, weight: .heavy).monospacedDigit())
+              .foregroundStyle(Theme.textTertiary)
+          } else if row.previousRank == nil, row.rank != nil {
+            Text("NEW")
+              .font(.system(size: 9.5, weight: .heavy))
+              .foregroundStyle(Theme.accent)
+          }
+        }
+        .font(.system(size: 9.5).monospacedDigit())
+        .foregroundStyle(Theme.textTertiary)
       }
-      .background(Theme.elevated, in: RoundedRectangle(cornerRadius: Theme.radiusCard))
-      .overlay(
-        RoundedRectangle(cornerRadius: Theme.radiusCard)
-          .stroke(Theme.hairline, lineWidth: 1)
-      )
     }
+    .contentShape(Rectangle())
+    .onTapGesture {
+      if let video = row.video {
+        detailTarget = video
+      }
+    }
+    .help(row.video == nil ? "未关联本地条目（缺少可精确匹配的身份）" : "查看本地详情")
   }
 
-  /// 同组榜的口径摘要：scope × window（entry 里的季信息在行上展示）
+  /// 同组榜的口径摘要：scope × window（entry 里的季信息在卡片标签行展示）
   private func scopesLabel(_ signals: [ExternalHeatStore.DisplayRow]) -> String {
     let scopes = Set(signals.map(\.rankingScope))
     let windows = Set(signals.compactMap(\.window).filter { !$0.isEmpty })
@@ -220,96 +312,7 @@ struct ExternalHeatTabView: View {
     return base + "/api/media/\(row.mediaID)/poster"
   }
 
-  private func signalRow(_ row: ExternalHeatStore.DisplayRow) -> some View {
-    let title = row.video?.title.decodingHTMLEntities ?? row.mediaTitle
-    return HStack(spacing: 13) {
-      // 名次：琥珀大号等宽——杂志层级的主角
-      Text(row.rank.map { "\($0)" } ?? "—")
-        .font(.system(size: 18, weight: .heavy).monospacedDigit())
-        .foregroundStyle(Theme.accent)
-        .frame(width: 30, alignment: .trailing)
-
-      PosterImage(url: posterURL(for: row))
-        .frame(width: 38)
-        .fixedSize()
-
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 7) {
-          Text(title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Theme.textPrimary)
-            .lineLimit(1)
-          // 名次变化徽标：同榜内站方口径
-          if let delta = row.rankDelta, delta > 0 {
-            Text("↑\(delta)")
-              .font(.system(size: 10, weight: .bold).monospacedDigit())
-              .foregroundStyle(Theme.accent)
-          } else if let delta = row.rankDelta, delta < 0 {
-            Text("↓\(-delta)")
-              .font(.system(size: 10, weight: .bold).monospacedDigit())
-              .foregroundStyle(Theme.textTertiary)
-          } else if row.previousRank == nil, row.rank != nil {
-            Text("NEW")
-              .font(.system(size: 9, weight: .bold))
-              .foregroundStyle(Theme.accent)
-              .padding(.horizontal, 4)
-              .padding(.vertical, 1)
-              .overlay(
-                RoundedRectangle(cornerRadius: 2)
-                  .stroke(Theme.accent.opacity(0.5), lineWidth: 1)
-              )
-          }
-        }
-        HStack(spacing: 8) {
-          if row.video != nil {
-            // 已关联：琥珀小点标记
-            Circle()
-              .fill(Theme.accent)
-              .frame(width: 4, height: 4)
-            Text("已关联")
-          } else {
-            Text("未关联")
-          }
-          if let platform = row.platform, !platform.isEmpty {
-            Text(platform)
-          }
-          if let region = row.region, !region.isEmpty, region != "GLOBAL" {
-            Text(region)
-          }
-          // 季/版本：榜单席位自带，标签解析不出就不展示（不猜季）
-          if let entryLabel = row.rankingEntryLabel, !entryLabel.isEmpty,
-             row.rankingEntryKey != "work" {
-            Text(entryLabel)
-          }
-        }
-        .font(.system(size: 10))
-        .foregroundStyle(Theme.textTertiary)
-      }
-
-      Spacer(minLength: 10)
-
-      VStack(alignment: .trailing, spacing: 3) {
-        // 站方采集时间：榜单新鲜度以此为准，不是本地请求时间
-        Text("采集 \(Self.shortTime(row.capturedAt))")
-          .font(.system(size: 10).monospacedDigit())
-          .foregroundStyle(Theme.textTertiary)
-        Text(ContentView.relativeTime(row.fetchedAt))
-          .font(.system(size: 9.5).monospacedDigit())
-          .foregroundStyle(Theme.textTertiary.opacity(0.75))
-      }
-    }
-    .padding(.vertical, 11)
-    .padding(.horizontal, 14)
-    .contentShape(Rectangle())
-    .onTapGesture {
-      if let video = row.video {
-        detailTarget = video
-      }
-    }
-    .help(row.video == nil ? "未关联本地条目（缺少可精确匹配的身份）" : "查看本地详情")
-  }
-
-  /// ISO 站方采集时间的短摘要（保留原文字段，显示截断；解析失败回退原文）
+    /// ISO 站方采集时间的短摘要（保留原文字段，显示截断；解析失败回退原文）
   static func shortTime(_ iso: String?) -> String {
     guard let iso, iso.count >= 10 else { return iso ?? "未知" }
     return String(iso.prefix(10)) // YYYY-MM-DD，自然日
