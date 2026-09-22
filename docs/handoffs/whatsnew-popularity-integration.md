@@ -150,12 +150,18 @@ WhatsNew 的作品可能按系列归并，`Release.seasonNumber` 和热度信号
 
 **新鲜度策略（实现定稿）**：`capturedAt` ISO 原样保留与本地 `fetchedAt` 分开展示，客户端取到响应的时间不冒充榜单更新时间；快照表按 UNIQUE upsert 覆盖、不删除未返回行（trending 50 条截断下"未返回"≠下榜），不预设施来源过期天数（初版不做自动失效，展示原文由用户判断）。
 
-**验证**：全量 `./scripts/test-macos.sh` 102 项（10 套）通过——含新增单元 17 项（解码/匹配含双 ID 冲突与电影剧集隔离/持久化幂等与截断保缓存/状态机）+ 引擎集成 4 项（stub 模拟服务：成功链路 2 请求全链、bad_service 拒接、unreachable 保留缓存与上次成功时间、畸形响应记状态）。**模拟 stub 是集成验证手段，不能替代真实联调**。
+**验证**：全量 `./scripts/test-macos.sh` 102 项（10 套）通过——含新增单元 17 项（解码/匹配含双 ID 冲突与电影剧集隔离/持久化幂等与截断保缓存/状态机）+ 引擎集成 4 项（stub 模拟服务：成功链路 2 请求全链、bad_service 拒接、unreachable 保留缓存与上次成功时间、畸形响应记状态）。**模拟 stub 是集成验证手段，不能替代真实联调**。**真实联调已完成（2026-09-22，用户自有 NAS `http://192.168.50.233:50016`，用户当轮提供）**：
+- health 实测 `{ok: true, service: "whatsnew-backend", environment: "main"}`，服务身份验证通过
+- trending 实测 69 信号 / 50 部作品（≤50 截断实证）、44/69 带 imdbId、capturedAt 100% 存在；真实响应顶层键与 mediaItem 键与客户端解码模型 **100% 对齐**
+- detail 实测 sourceRefs 格式多样（`imdb:tt...` / `thetvdb:movie:` / `tmdb-movie-`），豆瓣 ref 为 `douban-<id>`；部分作品无 douban ref（iqiyi/tencent/bilibili 抽样 4 部无身份，如实未关联）
+- **匹配覆盖实测**：IMDb 路径 0/28 命中（库内 180 条有 imdb_number）——双重原因：① WhatShot 活跃范围以国剧/番剧为主，与 WhatsNew trending 的欧美 Netflix/Trakt 内容交集小；② **tt 号层级错位**（库内为"该季第 1 集"单集 tt 号 vs WhatsNew 作品级 tt 号）。**豆瓣路径真实命中**：youku_reserve 抽样 2/2 命中（蜘蛛侠：崭新之日 93980、一瓯春 94026，`douban-<id>` ↔ 库内 douban_id 精确相等）；bilibili 番剧无身份无法匹配
+- **live 全链路测试通过**（真实服务 × 真实客户端代码 × 临时库：69 条信号全解码入库、豆瓣匹配命中、状态 ok，22.9s 含真实 2s 限频）——测试文件跑完即删，不留在套件中依赖外部服务
 
 **打包**：`/Users/zaynzhu/code/claude code/project/whatshot/dist/WhatShot.app`（ad-hoc 签名，arm64 thin，含全部接入代码；测试文件不入产物）。AppModel 冗余 await 警告为既有（本文档 120 行已记，未改源码）。
 
 **未验证项（如实）**：
-1. **真实 WhatsNew 服务联调未做**——本机无运行中 whatsnew-backend（19993/19992 均未监听，仅有 WhatsNew.app 客户端进程，其文档声明不跑本地服务）；用户 NAS 实际地址与部署版本未提供。覆盖统计（追剧命中率、未匹配比例、来源清单）待用户在设置中配置真实地址后首轮同步核对。
+1. ~~真实 WhatsNew 服务联调未做~~ → **已完成**（见上验证节）。
+2. （原第 2 条已并入联调结果：detail 补查路径已在真实响应上实测）（19993/19992 均未监听，仅有 WhatsNew.app 客户端进程，其文档声明不跑本地服务）；用户 NAS 实际地址与部署版本未提供。覆盖统计（追剧命中率、未匹配比例、来源清单）待用户在设置中配置真实地址后首轮同步核对。
 2. detail 补豆瓣身份的 detail 补查路径真实响应未实测（stub 验证了容错分支）。
 3. App 内端到端交互（配置→同步→外部热度页展示→详情关联）未人工走查——建议用户装新包后自查；局域网 HTTP 连接以打包 App 实测为准（ATS 边界未新增豁免，仅既有 NSAllowsLocalNetworking）。
 
