@@ -171,7 +171,9 @@
 ### 未验证项
 - **真实追剧反查未跑**：用户当前追剧清单为空，三类身份分支（豆瓣 ID 命中 / IMDb 作品级命中 / 单集 tt unmatched）已由 stub 集成测试覆盖，真实数据分支待用户关注作品后首轮同步自然验证。
 - WhatsNew 连调实例（192.168.50.114:19993）为临时环境——WhatShot 端无任何硬编码地址，正式部署后改 settings.whatsnewBaseURL 即可切换。
-- WhatsNew 端 lookup 端点未部署到 NAS 正式环境， WhatShot 生产实例的追剧反查在部署前会因 lookup 404 计 warning（不阻断主同步； WhatsNew 正式部署并切地址后自动生效）。
+- WhatsNew 端 lookup 端点未部署到 NAS 正式环境：WhatShot 生产实例的追剧反查遇 404 **静默降级**（不产 warning、不阻断，部署新版并切地址后自动生效；测试覆盖 lookupWatchlistGracefulWhenEndpointMissing）。
 
 ### 建议下一位角色
 - WhatsNew 端：无（端点已交付）。WhatsNew 正式部署后由用户触发 WhatShot 端地址切换 + 真实追剧反查验收（或等首轮同步自然验证）。
+
+> 修订 2026-09-23：追加 404 静默降级（生产 NAS 仍为旧版 WhatsNew 时的过渡处理），实现提交 141fa30；全量 117 项测试通过。
