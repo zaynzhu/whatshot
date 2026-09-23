@@ -150,7 +150,7 @@ WhatsNew 的作品可能按系列归并，`Release.seasonNumber` 和热度信号
 
 **新鲜度策略（实现定稿）**：`capturedAt` ISO 原样保留与本地 `fetchedAt` 分开展示，客户端取到响应的时间不冒充榜单更新时间；快照表按 UNIQUE upsert 覆盖、不删除未返回行（trending 50 条截断下"未返回"≠下榜），不预设施来源过期天数（初版不做自动失效，展示原文由用户判断）。
 
-**验证**：全量 `./scripts/test-macos.sh` 102 项（10 套）通过——含新增单元 17 项（解码/匹配含双 ID 冲突与电影剧集隔离/持久化幂等与截断保缓存/状态机）+ 引擎集成 4 项（stub 模拟服务：成功链路 2 请求全链、bad_service 拒接、unreachable 保留缓存与上次成功时间、畸形响应记状态）。**模拟 stub 是集成验证手段，不能替代真实联调**。**真实联调已完成（2026-09-22，用户自有 NAS `http://192.168.50.233:50016`，用户当轮提供）**：
+**验证**：全量 `./scripts/test-macos.sh` 102 项（10 套）通过——含新增单元 17 项（解码/匹配含双 ID 冲突与电影剧集隔离/持久化幂等与截断保缓存/状态机）+ 引擎集成 4 项（stub 模拟服务：成功链路 2 请求全链、bad_service 拒接、unreachable 保留缓存与上次成功时间、畸形响应记状态）。**模拟 stub 是集成验证手段，不能替代真实联调**。**真实联调已完成（2026-09-22，用户自有 WhatsNew NAS 服务，地址按红线不入 git——真值见本机 Application Support/WhatShot/settings.json 的 `whatsnewBaseURL`）**：
 - health 实测 `{ok: true, service: "whatsnew-backend", environment: "main"}`，服务身份验证通过
 - trending 实测 69 信号 / 50 部作品（≤50 截断实证）、44/69 带 imdbId、capturedAt 100% 存在；真实响应顶层键与 mediaItem 键与客户端解码模型 **100% 对齐**
 - detail 实测 sourceRefs 格式多样（`imdb:tt...` / `thetvdb:movie:` / `tmdb-movie-`），豆瓣 ref 为 `douban-<id>`；部分作品无 douban ref（iqiyi/tencent/bilibili 抽样 4 部无身份，如实未关联）

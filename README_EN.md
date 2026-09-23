@@ -29,6 +29,7 @@
 - **Poster backfill & S3 mirror** -- For entries whose site-side image host went dark (plaintext HTTP blocked by macOS ATS), posters are backfilled from Douban/TMDB automatically; with your own S3-compatible storage (RustFS/MinIO) configured, fetched posters are mirrored into your bucket before display, removing the dependency on third-party image hosts (endpoint/bucket/keys in Settings; LAN endpoints ride macOS local-networking exemption)
 - **Watchlist & update digest** -- One-click follow in the detail sheet; a dedicated "追剧" (Watchlist) tab shows latest episodes, completion status and last check time. Titles that drop off the charts are still checked each sync round (up to 20 per run, least-recently-checked first); episode changes since your last visit (e.g. "up to 9 → up to 12") are summarized at the top, with a tab dot that clears on visit
 - **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
+- **External heat (optional WhatsNew integration)** -- Point the app at your self-hosted WhatsNew service (NAS/LAN) to browse its source charts (Netflix weekly, Youku/iQiyi/Tencent reservation, bilibili and more) as a poster wall in the "External heat" tab: pick one source chart at a time (ranks across charts are never mixed), with rank badges and movement marks. Titles that exactly match your local library open the local detail sheet for following; Douban-rated titles additionally show a WhatsNew Douban rating comparison (votes and capture time) in the detail sheet. Requests fire only when explicitly enabled with a service address; chart semantics are labeled honestly (Douban TOP250 reputation / upcoming order / reservation show no movement marks) and no cross-source ranking is invented
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
 - **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
 - **Transparent sync status** -- The header status distinguishes "synced / partially completed / failed / stopped" and ages over time; the live phase and backfill counters show while syncing, and you can stop a run anytime (committed data is kept, remaining backfills resume next round); click the status to expand a per-step breakdown (per-chart and backfill results, error details and retry notes) — minor hiccups like Douban rate-limiting no longer masquerade as failures
@@ -90,12 +91,17 @@ Click "追剧" (Follow) in a detail sheet to watch a title; the "追剧" (Watchl
 
 The "设置" (Settings) tab lets you optionally pin a custom domain (highest priority when set; leave empty to use the official domain pool — each sync first discovers the latest domains from the publish page, then probes and picks the fastest official route, failing over automatically), tune sync frequency and the poster cache limit (300MB by default, lower or off), and shows the current route with measured latency and disk usage.
 
+**Browse external heat (optional)**
+
+If you self-host [WhatsNew](https://github.com/zaynzhu/whatsnew) on your NAS, enable it under "设置 → 外部热度（WhatsNew）" with your service URL (e.g. `http://<NAS-IP>:19993`). The "External heat" tab shows a poster wall of its source charts: the source chips select a single chart (ranks across charts are not comparable, so there is no mixed "all" view); cards show rank, movement and the source-side capture time. Titles exactly matching your local library are marked "已关联" (linked) and open the local detail sheet for following; Douban titles also get a WhatsNew Douban rating comparison in the detail sheet. No requests are made while disabled or unconfigured.
+
 ## 📚 Documentation
 
 | Doc | Description |
 |-----|-------------|
 | [docs/requirements.md](docs/requirements.md) | Confirmed requirements, butai0 API research (field semantics, pitfalls), architecture decisions |
 | [AGENTS.md](AGENTS.md) | Project rules: layout, resource constraints, security red lines |
+| [docs/lessons/INDEX.md](docs/lessons/INDEX.md) | Lessons learned: verified pitfalls with ready solutions (check before debugging) |
 
 ## 🤝 Contributing
 

@@ -18,6 +18,7 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 - `macos/`：Swift Package，`WhatShotCore`（模型、网络、持久化、同步）+ `WhatShotApp`（SwiftUI 窗口应用）+ Core 测试
 - `scripts/`：测试与本地 ad-hoc 打包脚本
 - `docs/requirements.md`：需求、butai0 接口调研结论与已确认决策，改需求先改这里
+- `docs/lessons/INDEX.md`：经验库（已验证的坑与现成方案），排坑/配置/调试任务开始前先查
 
 ## 架构定案（2026-09-11）
 
