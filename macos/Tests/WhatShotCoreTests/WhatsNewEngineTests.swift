@@ -397,6 +397,38 @@ struct WhatsNewEngineTests {
     ExternalHeatStore(queue: queue)
   }
 
+  /// 部署过渡： WhatsNew 版本尚无 lookup（404）→ 追剧反查静默降级，不反复报警
+  @Test func lookupWatchlistGracefulWhenEndpointMissing() async throws {
+    reset()
+    stubHealth()
+    StubProtocol.routes["/api/trending"] = (200, "{\"items\":[]}")
+    // lookup 无路由 → StubProtocol 抛连接失败？不——无路由是连接错误非 404。
+    // 显式给 404 路由模拟旧版服务
+    StubProtocol.routes["/api/media/lookup"] = (404, #"{"error":"not_found"}"#)
+    let tmp = NSTemporaryDirectory() + "whatshot-wn404-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+    _ = try await repo.upsert(ButaiVideo(
+      id: 7, doubanId: 35644140, title: "本地作品", originalTitle: nil, alias: nil,
+      episodeStatus: "更新至1集", episodes: "10", definition: nil, years: "2026",
+      classNames: "剧情", productionArea: "中国大陆", doubanScore: nil,
+      imdbNumber: nil, imdbScore: nil, posterURL: nil,
+      seedCount: 1, netdiskCount: 0, seedUpdatedAt: "2026-09-22 10:00:00",
+      updatedAt: nil, director: nil, performer: nil, abstract: nil, release: nil,
+      kind: .tvSeries
+    ), chartScope: nil, chartRank: nil, now: Date())
+    try await repo.addToWatchlist(videoID: 7, at: Date())
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [StubProtocol.self]
+    let client = WhatsNewClient(baseURL: "http://127.0.0.1:19993",
+                                limiter: RateLimiter(interval: 0.01),
+                                session: URLSession(configuration: config))
+    let engine = SyncEngine(client: ButaiClient(baseURL: "https://www.butai0.club"),
+                            repo: repo, settings: .default, whatsnew: client)
+    let summary = await engine.syncExternalHeat(whatsnew: client)
+    #expect(summary.warning == nil) // 404 静默降级，不产 warning
+  }
+
   // MARK: - 夹具
 
   func makeSignal(id: String, mediaItemId: String, rank: Int) -> WhatsNewClient.Signal {

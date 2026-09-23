@@ -776,7 +776,13 @@ public struct SyncEngine: Sendable {
         matchedTotal += response.matched
         progress("追剧反查", matchedTotal)
       } catch {
-        anyFailed = true // 单批失败 warning 不阻断另一批
+        // 404 = 部署的 WhatsNew 版本尚无 lookup 端点：静默降级（部署新版后自动生效），
+        // 不作为每轮重复的 warning；其他失败如实 warning
+        if let whatsnewError = error as? WhatsNewClient.WhatsNewError,
+           whatsnewError.message.contains("HTTP 404") {
+          continue
+        }
+        anyFailed = true
       }
     }
     return (matchedTotal, anyFailed)
