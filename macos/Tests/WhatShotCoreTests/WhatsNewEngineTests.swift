@@ -120,19 +120,19 @@ struct WhatsNewEngineTests {
     #expect(state.lastMediaCount == 1)
     let details = try await store.details(forVideo: 7)
     #expect(details.count == 1)
-    #expect(details.first?.detail.doubanRating?.value == 8.2)
-    #expect(details.first?.detail.doubanRating?.voteCount == 1234)
-    #expect(details.first?.detail.doubanRating?.capturedAt == "2026-09-22T01:02:03Z")
+    #expect(details.first?.detail?.doubanRating?.value == 8.2)
+    #expect(details.first?.detail?.doubanRating?.voteCount == 1234)
+    #expect(details.first?.detail?.doubanRating?.capturedAt == "2026-09-22T01:02:03Z")
     #expect(rows.first?.video?.doubanScore == nil)
 
     // 网络失败保留旧评分；成功的空评分清除旧值。
     StubProtocol.routes["/api/media/m1"] = (503, "{}")
     let failed = await engine.syncExternalHeat(whatsnew: client)
     #expect(failed.warning != nil)
-    #expect(try await store.details(forVideo: 7).first?.detail.doubanRating?.value == 8.2)
+    #expect(try await store.details(forVideo: 7).first?.detail?.doubanRating?.value == 8.2)
     StubProtocol.routes["/api/media/m1"] = (200, #"{"id":"m1","sourceRefs":[],"ratings":[]}"#)
     _ = await engine.syncExternalHeat(whatsnew: client)
-    #expect(try await store.details(forVideo: 7).first?.detail.doubanRating == nil)
+    #expect(try await store.details(forVideo: 7).first?.detail?.doubanRating == nil)
 
   }
 
@@ -164,7 +164,7 @@ struct WhatsNewEngineTests {
     _ = await engine.syncExternalHeat(whatsnew: makeClient())
     #expect(StubProtocol.requestedPaths.filter { $0.hasPrefix("/api/media/") } == ["/api/media/m2"])
     #expect(try await store.displayRows().filter { $0.video?.id == 9 }.count == 2)
-    #expect(try await store.details(forVideo: 9).first?.detail.doubanRating?.value == 9)
+    #expect(try await store.details(forVideo: 9).first?.detail?.doubanRating?.value == 9)
   }
 
   @Test func detailConflictDoesNotExposeRating() async throws {

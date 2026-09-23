@@ -100,9 +100,15 @@ public struct ExternalHeatStore: Sendable {
   /// 返回实际写入（含覆盖）行数。任一失败整批回滚，旧快照不被半批替换
   @discardableResult
   public func upsertSignals(_ rows: [SignalUpsert], fetchedAt: Date,
-                            details: [WhatsNewClient.MediaDetail] = []) async throws -> Int {
+                            details: [WhatsNewClient.MediaDetail] = [],
+                            failedMediaIDs: [String] = []) async throws -> Int {
     guard !rows.isEmpty else { return 0 }
     let nowSeconds = Int(fetchedAt.timeIntervalSince1970)
+    // 成功详情与失败占位共用同一张表：'null' 行 = 上次尝试失败（fetched_at 即最近尝试时间），
+    // 让失败条目在"最久未成功优先"的轮换里退到队尾，不霸占下一轮预算
+    let detailPayloads: [(mediaID: String, payload: String)] =
+      try details.map { ($0.id, String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) }
+      + failedMediaIDs.map { ($0, "null") }
     return try await queue.run { db in
       try db.exec("BEGIN IMMEDIATE")
       var committed = false
@@ -165,14 +171,13 @@ public struct ExternalHeatStore: Sendable {
         sqlite3_reset(stmt)
         written += 1
       }
-      for detail in details {
-        let payload = String(decoding: try JSONEncoder().encode(detail), as: UTF8.self)
+      for (mediaID, payload) in detailPayloads {
         let detailStmt = try db.prepare("""
           INSERT INTO external_media_details (media_id, detail_json, fetched_at) VALUES (?,?,?)
           ON CONFLICT(media_id) DO UPDATE SET detail_json=excluded.detail_json, fetched_at=excluded.fetched_at
           """)
         defer { sqlite3_finalize(detailStmt) }
-        SQLiteDatabase.bind(detailStmt, 1, detail.id)
+        SQLiteDatabase.bind(detailStmt, 1, mediaID)
         SQLiteDatabase.bind(detailStmt, 2, payload)
         SQLiteDatabase.bind(detailStmt, 3, nowSeconds)
         guard sqlite3_step(detailStmt) == SQLITE_DONE else {
@@ -210,11 +215,14 @@ public struct ExternalHeatStore: Sendable {
   }
 
   public struct CachedDetail: Sendable, Equatable {
-    public var detail: WhatsNewClient.MediaDetail
+    /// nil = 上次尝试失败（'null' 占位行）：参与轮换排序，但不参与匹配与展示
+    public var detail: WhatsNewClient.MediaDetail?
     public var fetchedAt: Date
   }
 
   /// 仅点查本次有限作品集合，不加载全部历史。
+  /// 'null' 占位行（上次尝试失败）返回 detail=nil；损坏行跳过——
+  /// 一条坏缓存不能毒化整轮同步，坏行会在该作品下次成功拉取时被覆盖自愈
   public func cachedDetails(mediaIDs: [String]) async throws -> [String: CachedDetail] {
     guard !mediaIDs.isEmpty else { return [:] }
     return try await queue.run { db in
@@ -226,7 +234,13 @@ public struct ExternalHeatStore: Sendable {
       while sqlite3_step(stmt) == SQLITE_ROW {
         guard let id = db.text(stmt, 0), let payload = db.text(stmt, 1),
               let seconds = db.int(stmt, 2) else { continue }
-        let detail = try JSONDecoder().decode(WhatsNewClient.MediaDetail.self, from: Data(payload.utf8))
+        if payload == "null" {
+          result[id] = CachedDetail(detail: nil, fetchedAt: Date(timeIntervalSince1970: Double(seconds)))
+          continue
+        }
+        guard let detail = try? JSONDecoder().decode(WhatsNewClient.MediaDetail.self, from: Data(payload.utf8)) else {
+          continue // 损坏行：跳过不抛，不让单条坏缓存冒充服务故障
+        }
         result[id] = CachedDetail(detail: detail, fetchedAt: Date(timeIntervalSince1970: Double(seconds)))
       }
       return result
@@ -246,7 +260,7 @@ public struct ExternalHeatStore: Sendable {
       return ids
     }
     let cached = try await cachedDetails(mediaIDs: ids)
-    return ids.compactMap { cached[$0] }
+    return ids.compactMap { cached[$0] }.filter { $0.detail != nil }
   }
 
   // MARK: - 查询

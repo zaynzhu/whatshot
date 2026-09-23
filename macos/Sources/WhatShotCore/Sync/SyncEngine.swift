@@ -596,6 +596,8 @@ public struct SyncEngine: Sendable {
       // 身份与评分共用详情预算：未检查/最久未检查优先，IMDb 已匹配作品也参与。
       let mediaIDs = Set(signals.compactMap { $0.mediaItem?.id }).sorted()
       let cached = try await store.cachedDetails(mediaIDs: mediaIDs)
+      // 'null' 占位行（上次尝试失败）的 fetched_at 也参与轮换排序——失败条目退到队尾，
+      // 不再霸占下一轮预算；其 detail 为 nil，匹配回退榜单标量
       var details = cached.mapValues(\.detail)
       let candidates = mediaIDs.sorted {
         let left = cached[$0]?.fetchedAt ?? .distantPast
@@ -603,7 +605,8 @@ public struct SyncEngine: Sendable {
         return left == right ? $0 < $1 : left < right
       }
       var refreshed: [WhatsNewClient.MediaDetail] = []
-      var detailFailures = 0
+      var failedMediaIDs: [String] = []   // 无成功缓存的失败条目：写占位行使轮换冷却
+      var detailFailures = 0              // 失败总数（含已有缓存的）：计入 warning
       for mediaID in candidates.prefix(whatsnewDetailBudgetPerRun) {
         if Task.isCancelled { break }
         do {
@@ -611,17 +614,22 @@ public struct SyncEngine: Sendable {
           details[mediaID] = detail
           refreshed.append(detail)
         } catch {
-          detailFailures += 1 // 失败保留旧值，成功的空评分会覆盖旧值
+          // 失败记占位（轮换冷却）仅限"无成功缓存"的条目——已有缓存的保留旧值不清，
+          // 其旧 fetched_at 会让它下轮自然靠前重试，且不霸占其余预算
+          detailFailures += 1
+          if details[mediaID] == nil {
+            failedMediaIDs.append(mediaID)
+          }
         }
       }
       let imdbs = signals.compactMap { $0.mediaItem?.imdbId }
-        + details.values.compactMap(\.imdbId)
-      let doubans = details.values.flatMap { ExternalHeatMatcher.doubanIds(in: $0.sourceRefs) }
+        + details.values.compactMap { $0 }.compactMap(\.imdbId)
+      let doubans = details.values.compactMap { $0 }.flatMap { ExternalHeatMatcher.doubanIds(in: $0.sourceRefs) }
       let identities = try await store.localIdentities(imdbs: imdbs, doubans: doubans)
       var matches: [String: ExternalHeatMatcher.Match] = [:]
       for signal in signals {
         guard let media = signal.mediaItem else { continue }
-        let detail = details[media.id]
+        let detail = details[media.id] ?? nil // 字典值已是 MediaDetail?，下标再包一层需拍平
         // 详情与榜单 IMDb 不一致时保守跳过，不把评分贴给错误作品。
         if let old = media.imdbId, let fresh = detail?.imdbId,
            ExternalHeatMatcher.normalizedIMDb(old) != ExternalHeatMatcher.normalizedIMDb(fresh) { continue }
@@ -644,7 +652,8 @@ public struct SyncEngine: Sendable {
           match: matches[signal.id]
         )
       }
-      let wrote = try await store.upsertSignals(rows, fetchedAt: clock(), details: refreshed)
+      let wrote = try await store.upsertSignals(rows, fetchedAt: clock(),
+                                                details: refreshed, failedMediaIDs: failedMediaIDs)
       let mediaCount = Set(signals.map(\.mediaItemId)).count
       try await store.setState(
         .init(lastSuccessAt: clock(), lastStatus: "ok", lastError: nil,

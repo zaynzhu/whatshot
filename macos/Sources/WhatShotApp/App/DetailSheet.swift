@@ -159,8 +159,8 @@ struct DetailSheet: View {
         if externalDetails.isEmpty {
           Text("WhatsNew：尚未取得可关联的评分数据")
         }
-        ForEach(externalDetails, id: \.detail.id) { cached in
-          if let rating = cached.detail.doubanRating {
+        ForEach(externalDetails, id: \.detail?.id) { cached in
+          if let rating = cached.detail?.doubanRating {
             Text("WhatsNew：\(rating.value.formatted(.number.precision(.fractionLength(1)))) / 10 · \(rating.voteCount.map { "\($0) 人评价" } ?? "评价人数未知")")
             Text("站方采集：\(rating.capturedAt ?? "未知")")
           } else {

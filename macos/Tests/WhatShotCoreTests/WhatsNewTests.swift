@@ -352,6 +352,41 @@ struct WhatsNewTests {
     #expect(failed.lastSuccessAt == t1)
   }
 
+  /// 坏缓存行不毒化：一条损坏的 detail_json 被跳过，其余行正常返回、整轮不炸
+  @Test func corruptedCacheRowIsSkipped() async throws {
+    let repo = try makeRepo()
+    let store = try makeStore(queue: repo.queue)
+    let t = Date(timeIntervalSince1970: 1_700_000_000)
+    try await store.upsertSignals(
+      [.init(signal: makeSignal(id: "s1", mediaItemId: "m1", rank: 1), mediaTitle: "A",
+             mediaType: "series", posterURL: nil, firstReleaseDate: nil, match: nil)],
+      fetchedAt: t,
+      details: [.init(id: "m2", imdbId: "tt1", sourceRefs: [], doubanRating: nil)])
+    // 手工注入坏行（模拟旧版本结构变更/损坏）
+    try await repo.queue.run { db in
+      try db.exec("INSERT INTO external_media_details (media_id, detail_json, fetched_at) VALUES ('m-bad', '{broken json', 1)")
+    }
+    let cached = try await store.cachedDetails(mediaIDs: ["m2", "m-bad"])
+    #expect(cached["m2"]?.detail != nil) // 成功缓存正常返回
+    #expect(cached["m-bad"] == nil) // 坏行被跳过，不是整轮抛错
+  }
+
+  /// 失败占位行：'null' 行参与轮换排序（fetchedAt = 失败时间）但不进展示
+  @Test func failedDetailPlaceholderRotates() async throws {
+    let repo = try makeRepo()
+    let store = try makeStore(queue: repo.queue)
+    let t = Date(timeIntervalSince1970: 1_700_000_000)
+    _ = try await store.upsertSignals(
+      [.init(signal: makeSignal(id: "s1", mediaItemId: "m1", rank: 1), mediaTitle: "A",
+             mediaType: "series", posterURL: nil, firstReleaseDate: nil, match: nil)],
+      fetchedAt: t, failedMediaIDs: ["m-fail"])
+    let cached = try await store.cachedDetails(mediaIDs: ["m-fail", "m-never"])
+    // 失败占位：detail 为 nil 但 fetchedAt = 失败时间（轮换键生效，不再永远插队）
+    #expect(cached["m-fail"]?.detail == nil)
+    #expect(cached["m-fail"]?.fetchedAt == t)
+    #expect(cached["m-never"] == nil) // 从未尝试过的仍以 distantPast 排队（更优先）
+  }
+
   /// 本地身份点查：IN 查询命中（大小写规范化由匹配器做，此处只验取回）
   @Test func localIdentityLookup() async throws {
     let repo = try makeRepo()
