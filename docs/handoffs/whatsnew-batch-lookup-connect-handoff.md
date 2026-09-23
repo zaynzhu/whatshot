@@ -153,4 +153,25 @@
 
 ## 交回摘要
 
-（WhatShot 端完成后在此追加）
+**WhatShot 端对接完成（2026-09-23，WhatShot main `见 git log`，未推送）**
+
+### 实际改动
+- `WhatsNewClient`：新增 `lookupMedia(mediaType:doubanIds:imdbIds:)`（契约 v1）——客户端自查批量 1–50（超限拒发不发请求）、mediaType 大类校验、POST 复用 2 秒限频；4xx 时服务端 error 码（unsupported_contract_version / batch_too_large 等）附进错误信息。
+- 新增公开模型 `LookupItem` / `LookupResponse`：全 Optional 容错解码，status 缺失行丢弃；doubanRating 校验 value 0…10 且 scale 缺省或 10；query 字段按位置对齐契约不解码。
+- `SyncEngine.lookupWatchlist`：追剧反查接入——追剧条目按 movie/series 分批（每轮各 ≤1 次请求，追剧 ≤20 条 × douban+imdb 双身份远低于 50 上限），matched 的信号写 external_heat（video_id 直填、已关联）、评分写 external_media_details（详情浮层对照自动生效）；unmatched（含单集 tt）如实跳过；单批失败 warning 不阻断另一批与主同步。base URL 全程走既有可配置 settings.whatsnewBaseURL，测试地址未进任何常量。
+- 测试：lookup 解码 5 项（matched/unmatched/ambiguous/4xx 语义/客户端批量上限）+ 追剧反查集成 1 项（不在 trending 内的追剧作品经反查拿信号与评分、unmatched 跳过）——全量 116 项 / 10 套全绿。
+- 真实连调：curl 冒烟 4/4（health、series 一瓯春 matched + tt11280740 unmatched、movie 蜘蛛侠 doubanRating 7.8/365671、contractVersion=2 与 51 条批量的 4xx）；client 方法 × 真实实例一次性 live 验证通过（已删，临时地址未入库）。
+
+### 契约偏离
+- 无偏离。响应结构与本文档「最终契约」一致。
+
+### 数据核对结论（蜘蛛侠豆瓣 ID 差异）
+- WhatShot 库内无 36685660 条目（该值来自需求快照阶段的生产库查询记录， WhatsNew 端判断为另一 subject；WhatShot 现存蜘蛛侠条目 douban_id 待用户库实际值核对，不阻塞）。
+
+### 未验证项
+- **真实追剧反查未跑**：用户当前追剧清单为空，三类身份分支（豆瓣 ID 命中 / IMDb 作品级命中 / 单集 tt unmatched）已由 stub 集成测试覆盖，真实数据分支待用户关注作品后首轮同步自然验证。
+- WhatsNew 连调实例（192.168.50.114:19993）为临时环境——WhatShot 端无任何硬编码地址，正式部署后改 settings.whatsnewBaseURL 即可切换。
+- WhatsNew 端 lookup 端点未部署到 NAS 正式环境， WhatShot 生产实例的追剧反查在部署前会因 lookup 404 计 warning（不阻断主同步； WhatsNew 正式部署并切地址后自动生效）。
+
+### 建议下一位角色
+- WhatsNew 端：无（端点已交付）。WhatsNew 正式部署后由用户触发 WhatShot 端地址切换 + 真实追剧反查验收（或等首轮同步自然验证）。
