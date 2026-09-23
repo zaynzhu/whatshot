@@ -110,6 +110,29 @@ public struct WhatsNewClient: Sendable {
     return data
   }
 
+  /// POST 请求（批量身份查询用）。4xx 时把服务端 error 码附进错误信息——
+  /// invalid_body / batch_too_large / unsupported_contract_version / empty_lookup_batch 语义可辨
+  private func post(_ path: String, body: Data) async throws -> Data {
+    guard !baseURL.isEmpty, let url = URL(string: baseURL + path) else {
+      throw WhatsNewError(message: "WhatsNew 服务地址无效：\(baseURL)")
+    }
+    await limiter.waitTurn()
+    var request = URLRequest(url: url, timeoutInterval: 20)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.httpBody = body
+    let (data, response) = try await session.data(for: request)
+    guard let http = response as? HTTPURLResponse else {
+      throw WhatsNewError(message: "WhatsNew 响应不是 HTTP")
+    }
+    guard (200..<300).contains(http.statusCode) else {
+      let detail = String(decoding: data, as: UTF8.self).prefix(120)
+      throw WhatsNewError(message: "WhatsNew HTTP \(http.statusCode): \(detail)")
+    }
+    return data
+  }
+
   /// 健康检查：验证服务身份
   public func fetchHealth() async throws -> Health {
     let data = try await get("/api/health")
@@ -150,6 +173,60 @@ public struct WhatsNewClient: Sendable {
       },
       doubanRating: raw.ratings?.compactMap(Self.parseDoubanRating).first
     )
+  }
+
+  // MARK: - 批量身份查询（契约 v1，2026-09-23）
+
+  /// POST /api/media/lookup 响应行。query 字段按契约与输入位置对齐，消费方不读（忽略）。
+  /// 三种"没有"分开：unmatched（reason）/ matched+signals 空（在库但无当前信号）/ 4xx 请求级错误
+  public struct LookupItem: Sendable, Equatable {
+    public var status: String
+    public var reason: String?
+    public var mediaId: String?
+    public var matchBasis: String?
+    public var matchLevel: String?
+    public var titleDisplay: String?
+    public var mediaType: String?
+    public var firstReleaseDate: String?
+    public var workStatus: String?
+    public var heatScore: Double?
+    public var signals: [Signal]
+    public var lastSignalCapturedAt: String?
+    public var doubanRating: DoubanRating?
+    public var imdbId: String?
+    public var tmdbId: Int?
+    public var candidateMediaIds: [String]
+  }
+
+  public struct LookupResponse: Sendable, Equatable {
+    public var contractVersion: Int?
+    public var matched: Int
+    public var unmatched: Int
+    public var ambiguous: Int
+    public var items: [LookupItem]
+  }
+
+  /// 批量身份查询：一次请求最多 50 个身份（douban + imdb 合计），客户端发送前自查
+  /// 与服务端 400 batch_too_large 双保险；mediaType 大类隔离由服务端强制。
+  /// 独立 2 秒限频（与 fetchTrending 共享同一 limiter）
+  public func lookupMedia(mediaType: String, doubanIds: [Int], imdbIds: [String]) async throws -> LookupResponse {
+    let total = doubanIds.count + imdbIds.count
+    guard mediaType == "movie" || mediaType == "series" else {
+      throw WhatsNewError(message: "lookup mediaType 必须为 movie 或 series")
+    }
+    guard total >= 1, total <= 50 else {
+      throw WhatsNewError(message: "lookup 批量数须为 1–50（当前 \(total)）")
+    }
+    struct RequestBody: Encodable {
+      var contractVersion: Int
+      var mediaType: String
+      var doubanIds: [Int]
+      var imdbIds: [String]
+    }
+    let body = try JSONEncoder().encode(
+      RequestBody(contractVersion: 1, mediaType: mediaType, doubanIds: doubanIds, imdbIds: imdbIds))
+    let data = try await post("/api/media/lookup", body: body)
+    return try Self.parseLookup(try Self.decode(LookupResponsePayload.self, from: data))
   }
 
   // MARK: - 解码（私有负载结构 → 容错映射为公开模型）
@@ -259,6 +336,85 @@ public struct WhatsNewClient: Sendable {
       isCurrent: item.isCurrent ?? true,
       mediaItem: media
     )
+  }
+
+  struct LookupResponsePayload: Decodable {
+    var contractVersion: Int?
+    var counts: CountsPayload?
+    var items: [LookupItemPayload]?
+
+    struct CountsPayload: Decodable {
+      var matched: Int?
+      var unmatched: Int?
+      var ambiguous: Int?
+    }
+  }
+
+  struct LookupItemPayload: Decodable {
+    var status: String?
+    var reason: String?
+    var mediaId: String?
+    var matchBasis: String?
+    var matchLevel: String?
+    var titleDisplay: String?
+    var mediaType: String?
+    var firstReleaseDate: String?
+    var workStatus: String?
+    var heatScore: Double?
+    var signals: [SignalPayload]?
+    var lastSignalCapturedAt: String?
+    var doubanRating: DoubanRatingPayload?
+    var imdbId: String?
+    var tmdbId: Int?
+    var candidateMediaIds: [String]?
+  }
+
+  struct DoubanRatingPayload: Decodable {
+    var value: Double?
+    var scale: Int?
+    var voteCount: Int?
+    var capturedAt: String?
+  }
+
+  static func parseLookup(_ raw: LookupResponsePayload) -> LookupResponse {
+    let items = (raw.items ?? []).compactMap { item -> LookupItem? in
+      guard let status = item.status else { return nil } // status 缺失的行无法解释，丢弃
+      return LookupItem(
+        status: status,
+        reason: item.reason,
+        mediaId: item.mediaId,
+        matchBasis: item.matchBasis,
+        matchLevel: item.matchLevel,
+        titleDisplay: item.titleDisplay,
+        mediaType: item.mediaType,
+        firstReleaseDate: item.firstReleaseDate,
+        workStatus: item.workStatus,
+        heatScore: item.heatScore,
+        signals: (item.signals ?? []).compactMap(parseSignal),
+        lastSignalCapturedAt: item.lastSignalCapturedAt,
+        doubanRating: item.doubanRating.flatMap(Self.parseDoubanRating),
+        imdbId: item.imdbId,
+        tmdbId: item.tmdbId,
+        candidateMediaIds: item.candidateMediaIds ?? []
+      )
+    }
+    return LookupResponse(
+      contractVersion: raw.contractVersion,
+      matched: raw.counts?.matched ?? items.filter { $0.status == "matched" }.count,
+      unmatched: raw.counts?.unmatched ?? items.filter { $0.status == "unmatched" }.count,
+      ambiguous: raw.counts?.ambiguous ?? items.filter { $0.status == "ambiguous" }.count,
+      items: items
+    )
+  }
+
+  /// lookup 响应的 doubanRating 单值对象（value/scale/voteCount/capturedAt）。
+  /// scale 存在且非 10 的行不采信（契约口径 scale=10）
+  static func parseDoubanRating(_ payload: DoubanRatingPayload) -> DoubanRating? {
+    guard let value = payload.value, value.isFinite, (0...10).contains(value),
+          payload.scale == nil || payload.scale == 10 else { return nil }
+    return DoubanRating(value: value,
+                        voteCount: payload.voteCount.flatMap { $0 >= 0 ? $0 : nil },
+                        capturedAt: payload.capturedAt)
   }
 
   /// 基础 JSON 校验 + 解码。字段名对不上/类型不符按 nil 处理（全 Optional），

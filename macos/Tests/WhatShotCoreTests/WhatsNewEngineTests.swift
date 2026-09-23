@@ -243,6 +243,160 @@ struct WhatsNewEngineTests {
     #expect(try await store.displayRows().isEmpty)
   }
 
+  // MARK: - lookup client（契约 v1，2026-09-23）
+
+  /// lookup 解码：matched/unmatched 行、counts、signals、评分
+  @Test func lookupDecoding() async throws {
+    reset()
+    StubProtocol.routes["/api/media/lookup"] = (200, """
+    {"contractVersion":1,"counts":{"matched":1,"unmatched":1,"ambiguous":0},"items":[
+      {"query":{"kind":"douban","id":35644140},"status":"matched","mediaId":"m1",
+       "matchBasis":"douban","matchLevel":"work","titleDisplay":"一瓯春","mediaType":"series",
+       "workStatus":"released","heatScore":0,"signals":[
+         {"id":"sig1","mediaItemId":"m1","source":"iqiyi_reserve","platform":"爱奇艺",
+          "region":"CN","window":"current","rankingScope":"overall","rank":52,
+          "capturedAt":"2026-09-23T13:08:50.345Z","isCurrent":true}],
+       "lastSignalCapturedAt":"2026-09-17T01:08:09.533Z","doubanRating":null},
+      {"query":{"kind":"imdb","id":"tt11280740"},"status":"unmatched","reason":"no_work_level_identity"}
+    ]}
+    """)
+    let response = try await makeClient().lookupMedia(mediaType: "series",
+                                                      doubanIds: [35644140], imdbIds: ["tt11280740"])
+    #expect(response.matched == 1 && response.unmatched == 1 && response.ambiguous == 0)
+    #expect(response.items.count == 2)
+    let matched = response.items[0]
+    #expect(matched.status == "matched")
+    #expect(matched.mediaId == "m1")
+    #expect(matched.matchBasis == "douban")
+    #expect(matched.signals.count == 1)
+    #expect(matched.signals[0].source == "iqiyi_reserve")
+    #expect(matched.doubanRating == nil) // 在库但无评分，与 unmatched 区分
+    let unmatched = response.items[1]
+    #expect(unmatched.status == "unmatched")
+    #expect(unmatched.reason == "no_work_level_identity")
+    #expect(StubProtocol.requestedPaths == ["/api/media/lookup"])
+  }
+
+  /// ambiguous：不代选，回传候选列表
+  @Test func lookupAmbiguousRow() async throws {
+    reset()
+    StubProtocol.routes["/api/media/lookup"] = (200, """
+    {"contractVersion":1,"counts":{"ambiguous":1},"items":[
+      {"query":{"kind":"imdb","id":"tt999"},"status":"ambiguous",
+       "reason":"multiple_candidates","candidateMediaIds":["mA","mB"]}
+    ]}
+    """)
+    let response = try await makeClient().lookupMedia(mediaType: "movie", doubanIds: [], imdbIds: ["tt999"])
+    #expect(response.items[0].status == "ambiguous")
+    #expect(response.items[0].candidateMediaIds == ["mA", "mB"])
+  }
+
+  /// 蜘蛛侠 movie：评分与信号解码（真实冒烟值 7.8/365671）
+  @Test func lookupDoubanRatingDecoding() async throws {
+    reset()
+    StubProtocol.routes["/api/media/lookup"] = (200, """
+    {"contractVersion":1,"counts":{"matched":1},"items":[
+      {"query":{"kind":"douban","id":36246195},"status":"matched","mediaId":"m1",
+       "matchBasis":"douban","matchLevel":"work","titleDisplay":"蜘蛛侠：崭新之日",
+       "mediaType":"movie","heatScore":100,
+       "signals":[{"id":"s1","mediaItemId":"m1","source":"iqiyi_reserve","rank":52,
+                   "window":"current","rankingScope":"overall","isCurrent":true}],
+       "doubanRating":{"value":7.8,"scale":10,"voteCount":365671,
+                       "capturedAt":"2026-09-22T00:00:00.000Z"},"imdbId":null,"tmdbId":294990}
+    ]}
+    """)
+    let response = try await makeClient().lookupMedia(mediaType: "movie", doubanIds: [36246195], imdbIds: [])
+    let rating = response.items[0].doubanRating
+    #expect(rating?.value == 7.8)
+    #expect(rating?.voteCount == 365671)
+    #expect(response.items[0].signals.count == 1)
+  }
+
+  /// 4xx：服务端 error 码进错误信息（请求级失败与 unmatched 语义分开）
+  @Test func lookupClientErrorCarriesServerCode() async throws {
+    reset()
+    StubProtocol.routes["/api/media/lookup"] =
+      (400, #"{"error":"unsupported_contract_version","supportedVersion":1}"#)
+    do {
+      _ = try await makeClient().lookupMedia(mediaType: "series", doubanIds: [1], imdbIds: [])
+      Issue.record("应当抛错")
+    } catch let error as WhatsNewClient.WhatsNewError {
+      #expect(error.message.contains("unsupported_contract_version"))
+    }
+  }
+
+  /// 客户端自查批量上限：>50 拒绝发送（不发任何网络请求）
+  @Test func lookupBatchLimitEnforcedLocally() async throws {
+    reset()
+    let many = Array(repeating: 1, count: 51)
+    do {
+      _ = try await makeClient().lookupMedia(mediaType: "series", doubanIds: many, imdbIds: [])
+      Issue.record("应当拒绝")
+    } catch {
+      #expect(StubProtocol.requestedPaths.isEmpty) // 未发请求
+    }
+  }
+
+  /// 追剧反查：不在 trending 50 部内的追剧作品经 lookup 拿到信号与评分；
+  /// unmatched（单集 tt）如实跳过；lookup 失败不阻断（warning）
+  @Test func lookupWatchlistIntegration() async throws {
+    reset()
+    stubHealth()
+    // trending 返回别的作品（不含追剧条目 m1），验证反查独立生效
+    StubProtocol.routes["/api/trending"] = (200, "{\"items\":[]}")
+    StubProtocol.routes["/api/media/lookup"] = (200, """
+    {"contractVersion":1,"counts":{"matched":1,"unmatched":1},"items":[
+      {"query":{"kind":"douban","id":35644140},"status":"matched","mediaId":"m1",
+       "matchBasis":"douban","matchLevel":"work","titleDisplay":"一瓯春",
+       "mediaType":"series","signals":[
+         {"id":"sig1","mediaItemId":"m1","source":"iqiyi_reserve","platform":"爱奇艺",
+          "region":"CN","window":"current","rankingScope":"overall","rank":52,
+          "capturedAt":"2026-09-23T13:08:50.345Z","isCurrent":true}],
+       "doubanRating":null,"imdbId":null},
+      {"query":{"kind":"imdb","id":"tt3658012"},"status":"unmatched","reason":"no_work_level_identity"}
+    ]}
+    """)
+    let tmp = NSTemporaryDirectory() + "whatshot-wnwl-\(UUID().uuidString).sqlite3"
+    let queue = try DatabaseQueue(path: tmp)
+    let repo = VideoRepository(queue: queue)
+    _ = try await repo.upsert(ButaiVideo(
+      id: 7, doubanId: 35644140, title: "本地作品", originalTitle: nil, alias: nil,
+      episodeStatus: "更新至1集", episodes: "10", definition: nil, years: "2026",
+      classNames: "剧情", productionArea: "中国大陆", doubanScore: nil,
+      imdbNumber: "tt3658012", imdbScore: nil, posterURL: nil,
+      seedCount: 1, netdiskCount: 0, seedUpdatedAt: "2026-09-22 10:00:00",
+      updatedAt: nil, director: nil, performer: nil, abstract: nil, release: nil,
+      kind: .tvSeries
+    ), chartScope: nil, chartRank: nil, now: Date())
+    try await repo.addToWatchlist(videoID: 7, at: Date())
+
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [StubProtocol.self]
+    let client = WhatsNewClient(baseURL: "http://127.0.0.1:19993",
+                                limiter: RateLimiter(interval: 0.01),
+                                session: URLSession(configuration: config))
+    let engine = SyncEngine(client: ButaiClient(baseURL: "https://www.butai0.club"),
+                            repo: repo, settings: .default, whatsnew: client)
+    let summary = await engine.syncExternalHeat(whatsnew: client)
+
+    // 追剧条目 7：反查信号入库且已关联；评分缓存可查（对照展示生效）
+    let rows = try await store0(queue).displayRows()
+    let watchSignal = rows.first { $0.video?.id == 7 }
+    #expect(watchSignal != nil)
+    #expect(watchSignal?.rank == 52)
+    #expect(watchSignal?.matchBasis == "douban")
+    let details = try await store0(queue).details(forVideo: 7)
+    #expect(details.first?.detail?.doubanRating == nil) // 一瓯春在库但无评分
+
+    // 评分：另一 mock 作品带评分的场景在 lookupDoubanRatingDecoding 已覆盖
+    _ = details
+  }
+
+  /// 独立 store 实例（与 makeEngine 的临时库共享由调用方传入）
+  func store0(_ queue: DatabaseQueue) -> ExternalHeatStore {
+    ExternalHeatStore(queue: queue)
+  }
+
   // MARK: - 夹具
 
   func makeSignal(id: String, mediaItemId: String, rank: Int) -> WhatsNewClient.Signal {

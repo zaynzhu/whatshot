@@ -661,8 +661,20 @@ public struct SyncEngine: Sendable {
         at: clock()
       )
       progress("外部热度", wrote)
-      return PremiereBackfillSummary(fetched: signals.count, withDate: matchedCount,
-                                     warning: detailFailures == 0 ? nil : "WhatsNew 部分详情未更新（\(detailFailures) 部），保留本地缓存")
+
+      // 6. 追剧反查（lookup 契约 v1）：追剧条目身份批量查 WhatsNew——不在 trending 50 部
+      // 内的追剧作品也拿得到信号与评分；失败 warning 不阻断
+      let lookup = await lookupWatchlist(whatsnew: whatsnew, store: store)
+      var warnings: [String] = []
+      if detailFailures > 0 {
+        warnings.append("WhatsNew 部分详情未更新（\(detailFailures) 部），保留本地缓存")
+      }
+      if lookup.failed {
+        warnings.append("WhatsNew 追剧反查失败，本轮跳过；不影响追剧与原同步")
+      }
+      return PremiereBackfillSummary(fetched: signals.count,
+                                     withDate: matchedCount + lookup.matched,
+                                     warning: warnings.isEmpty ? nil : warnings.joined(separator: "；"))
     } catch {
       // 失败保留上次有效缓存（不写库不清行），状态如实记录；只计 warning
       let status: String
@@ -683,6 +695,91 @@ public struct SyncEngine: Sendable {
       return PremiereBackfillSummary(fetched: 0, withDate: 0,
                                      warning: "外部热度拉取失败（\(status)），下轮自动重试；不影响追剧与原同步")
     }
+  }
+
+  /// 追剧反查：追剧条目身份批量查 WhatsNew（lookup 契约 v1，每轮 movie/series 各 ≤1 次请求，
+  /// 2 秒限频共享 limiter）。匹配结果：信号写 external_heat（video_id 直填追剧条目）、
+  /// 评分写 external_media_details（详情浮层对照自动生效）。unmatched（含单集 tt 号）
+  /// 如实跳过；失败 warning 不阻断主同步与追剧
+  func lookupWatchlist(whatsnew: WhatsNewClient, store: ExternalHeatStore) async -> (matched: Int, failed: Bool) {
+    let watchRows = (try? await repo.watchlistRows()) ?? []
+    guard !watchRows.isEmpty else { return (0, false) }
+    // 收集身份（按大类分组去重；douban + imdb 双身份都查，同 ID 多条目取首个）
+    var doubanToVideo: [Int: Int] = [:]
+    var imdbToVideo: [String: Int] = [:]
+    var movieDouban: [Int] = []
+    var movieIMDb: [String] = []
+    var seriesDouban: [Int] = []
+    var seriesIMDb: [String] = []
+    for row in watchRows {
+      let v = row.video
+      if let d = v.doubanId, d > 0 {
+        if v.kind == .movie {
+          if doubanToVideo[d] == nil { movieDouban.append(d); doubanToVideo[d] = v.id }
+        } else {
+          if doubanToVideo[d] == nil { seriesDouban.append(d); doubanToVideo[d] = v.id }
+        }
+      }
+      if let imdb = v.imdbNumber, imdb.hasPrefix("tt"), imdbToVideo[imdb] == nil {
+        if v.kind == .movie {
+          movieIMDb.append(imdb); imdbToVideo[imdb] = v.id
+        } else {
+          seriesIMDb.append(imdb); imdbToVideo[imdb] = v.id
+        }
+      }
+    }
+    var matchedTotal = 0
+    var anyFailed = false
+    for (mediaType, doubanIds, imdbIds) in [("movie", movieDouban, movieIMDb), ("series", seriesDouban, seriesIMDb)] as [(String, [Int], [String])] {
+      guard !doubanIds.isEmpty || !imdbIds.isEmpty else { continue }
+      // 单批 douban+imdb 合计 ≤50：超出截断（追剧上限 20 条 × 2 身份通常不会到 50）
+      let dIds = Array(doubanIds.prefix(50))
+      let iIds = Array(imdbIds.prefix(max(0, 50 - dIds.count)))
+      // 位置对齐映射：items 前 n 个 = doubanIds 序，其后 = imdbIds 序
+      let doubanVideoMap = Dictionary(doubanToVideo.filter { dIds.contains($0.key) },
+                                      uniquingKeysWith: { first, _ in first })
+      let imdbVideoMap = Dictionary(imdbToVideo.filter { iIds.contains($0.key) },
+                                    uniquingKeysWith: { first, _ in first })
+      do {
+        let response = try await whatsnew.lookupMedia(mediaType: mediaType,
+                                                      doubanIds: dIds, imdbIds: iIds)
+        let now = clock()
+        var rows: [ExternalHeatStore.SignalUpsert] = []
+        var details: [WhatsNewClient.MediaDetail] = []
+        for (offset, item) in response.items.enumerated() {
+          let videoID: Int?
+          if offset < dIds.count {
+            videoID = doubanVideoMap[dIds[offset]]
+          } else {
+            let imdb = iIds[offset - dIds.count]
+            videoID = imdbVideoMap[imdb]
+          }
+          guard item.status == "matched", let mediaId = item.mediaId, let videoID else { continue }
+          let basis: ExternalHeatMatcher.Basis?
+          switch item.matchBasis {
+          case "douban": basis = .douban
+          case "imdb": basis = .imdb
+          default: basis = nil
+          }
+          rows += item.signals.map { signal in
+            ExternalHeatStore.SignalUpsert(
+              signal: signal, mediaTitle: item.titleDisplay ?? "",
+              mediaType: item.mediaType, posterURL: nil,
+              firstReleaseDate: item.firstReleaseDate,
+              match: ExternalHeatMatcher.Match(videoID: videoID, basis: basis ?? .imdb)
+            )
+          }
+          details.append(.init(id: mediaId, imdbId: item.imdbId, sourceRefs: [],
+                               doubanRating: item.doubanRating))
+        }
+        try await store.upsertSignals(rows, fetchedAt: now, details: details)
+        matchedTotal += response.matched
+        progress("追剧反查", matchedTotal)
+      } catch {
+        anyFailed = true // 单批失败 warning 不阻断另一批
+      }
+    }
+    return (matchedTotal, anyFailed)
   }
 
   func describe(_ error: Error) -> String {
