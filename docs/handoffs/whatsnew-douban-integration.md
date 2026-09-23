@@ -1,4 +1,4 @@
-# WhatsNew 豆瓣数据 × WhatShot 结合：交接（事实清点 + 待拍板事项）
+# WhatsNew 豆瓣数据 × WhatShot 结合：执行完成，交回只读审查
 
 ## 立即接手
 
@@ -9,13 +9,24 @@
 - 第一步：核对当前规则、Git 状态与执行回执，审查评分隔离、精确匹配、预算/缓存与榜单语义；不要擅自实施 B/C。
 - 完成标准：已确认范围实现、测试、打包；不混算、不覆盖主数据评分、不改变首播日与海报链路。
 
+## 给接手者的完成摘要
+
+用户拍板后，执行者已实际修改代码并完成测试、真实服务联调与本机打包，不是只写了建议。
+
+- **已经做完**：豆瓣榜单区分口碑/待播顺序/预约；本地作品详情增加 WhatsNew 豆瓣评分、评价人数、采集时间，与 butai0 转载分对照。
+- **只做调查**：库内海报借道。调查结果与局限见下文，未替换获取方式。
+- **完全未实施**：首播日借道（用户暂缓）。
+- **使用状态**：只生成 `dist/WhatShot.app`，未安装到 Applications、未重启或替换用户正在运行的应用。正式本地数据库未被联调修改；新包运行后才会按正常启动/同步流程补表和缓存评分。
+- **代码基准**：实施提交 `f3d8d6c`（`feat: 展示外部豆瓣评分并区分榜单语义`），其父提交 `cf2ea00`。审查使用 `git diff cf2ea00..f3d8d6c`。本次交回只补充交接说明，不再修改实现。
+- **核对状态**：本次更新交接前两仓库工作区均干净；WhatShot 为 `main / f3d8d6c`，WhatsNew 为 `codex/whatsnew-mvp / 49a523f`。下面测试证据来自前一实施轮，适用于 `f3d8d6c`；本次交接没有重跑测试、访问 NAS 或读取正式库。
+
 ## 定位、状态与必读
 
 快照日期：2026-09-23。下文相对 WhatShot 根目录；`../whatsnew/` 相对同一父目录。
 
 | 仓库 | 当前机器定位 | 分支 / HEAD（写文时） | 说明 |
 |---|---|---|---|
-| WhatShot | `/Users/zaynzhu/code/claude code/project/whatshot` | `main`，接手基线 `cf2ea00` | 接手时重新核对 |
+| WhatShot | `/Users/zaynzhu/code/claude code/project/whatshot` | `main`，实施提交 `f3d8d6c`，审查基线 `cf2ea00` | 接手时重新核对 |
 | WhatsNew | `/Users/zaynzhu/code/claude code/project/whatsnew` | `codex/whatsnew-mvp` / `49a523f` | **只读，禁改**（WhatShot 规则未撤销） |
 | WhatsNew 服务 | 用户已配置的可信内网 NAS（地址仅本地保留） | 部署版本未知 | 全部实测走这里 |
 
@@ -25,7 +36,7 @@
 2. `docs/requirements.md` 定案二/五/六（豆瓣首播日与海报兜底的既有链路）+ 定案八/九（外部热度与本轮评分/语义范围）。
 3. `docs/handoffs/whatsnew-popularity-integration.md`：外部热度执行回执（API 契约实测、匹配覆盖数据、局限）。
 4. `../whatsnew/docs/integration-guide.md` + `../whatsnew/backend/prisma/schema.prisma`：ratings/sourceRefs/poster 的字段定义。
-5. `macos/Sources/WhatShotCore/Networking/WhatsNewClient.swift`、`macos/Sources/WhatShotCore/Persistence/ExternalHeatStore.swift`：现有客户端与快照表（豆瓣结合若落地，复用面在这里）。
+5. `macos/Sources/WhatShotCore/Networking/WhatsNewClient.swift`、`macos/Sources/WhatShotCore/Persistence/ExternalHeatStore.swift`：本轮评分解码、身份与评分缓存、查询和事务写入。
 6. `macos/Sources/WhatShotCore/Sync/SyncEngine.swift`（backfillPremieres / backfillPostersViaDouban）+ `DoubanClient.swift`：WhatShot 自家豆瓣直连链路（借道方案的对照对象）。
 
 ## 前轮调查快照（2026-09-22，当前状态以执行回执为准）
@@ -50,7 +61,7 @@
 - WhatsNew 有三个豆瓣来源：`douban_top`（TOP250 口碑）、`douban_upcoming`（即将播出，实测 window="豆瓣剧集即将播出"，rank=2）、`douban_upcoming_hot`（预约热度，实测 scope=series rank=18）。
 - 三者都**不参与** WhatsNew 的 heatScore（`popularityMovement.ts` 的 `NON_HEAT_SIGNAL_SOURCES` 明确排除）。
 - 2026-09-22 trending 快照：68 条信号中 douban_upcoming 1 条 + douban_upcoming_hot 1 条（覆盖少，非每轮都有）。
-- 这类信号**已经在** WhatShot 的外部热度页出现（trending 无筛选全量返回、定案八快照表照存照展示）——无需新开发，但 UI 目前不区分"预约/待播/口碑"与动态热度的语义差异。
+- 这类信号**已经在** WhatShot 的外部热度页出现（trending 无筛选全量返回、定案八快照表照存照展示）——前轮 UI 尚未区分"预约/待播/口碑"与动态热度，本轮已补齐区分。
 
 ### 4. 豆瓣海报（借道代理） —— 可用，WhatShot 未接
 
@@ -121,9 +132,17 @@
 - `./scripts/test-macos.sh`：**107 项 / 10 套全部通过**。涵盖评分字段校验、空评分清除、失败保缓存、IMDb 路径评分、预算轮换、缓存豆瓣身份、多席位去重、冲突不展示与评分失败整批回滚。
 - 真实客户端/同步引擎 × 用户 NAS × 本地库临时副本：**23.177 秒通过**，本轮信号 **68**、缓存详情 **10**、含豆瓣评分 **2**、本地可展示评分 **2**。使用真实 ≥2 秒限频，正式数据库未修改。临时测试文件已删除，不留依赖 NAS 的常规测试。
 - `./scripts/build-macos-app.sh`：成功，生成 `dist/WhatShot.app`，ad-hoc 签名与严格签名校验通过；未上传、未创建 Release。
-- Git：本回执与本轮代码/测试/规则在同一原子提交中，提交消息 `feat: 展示外部豆瓣评分并区分榜单语义`；WhatShot main，无推送；WhatsNew 仍干净。
+- Git：实现与首次回执在 `f3d8d6c` 原子提交中，提交消息 `feat: 展示外部豆瓣评分并区分榜单语义`；WhatShot main，无推送；WhatsNew 仍干净。
 - 尚未人工走查打包 App 的配置→同步→详情交互；全量豆瓣评分覆盖、全部本地坏图的 WhatsNew 匹配率、逐图字节可用性未验证。NAS 实际部署 commit 未知。
 - 编译仍有既有 warning（AppModel 冗余 await、可选 window 插值、旧测试 Sendable/未使用变量），未扩展清理范围。
+
+## 建议审查顺序与剩余事项
+
+1. 对照定案九与 `cf2ea00..f3d8d6c`，确认只实施 A 与榜单语义，海报/首播日/WhatsNew 服务端没有变更。
+2. 看 `WhatsNewClient.swift`、`SyncEngine.swift`、`ExternalHeatStore.swift` 和相关测试，重点检查身份冲突、旧榜席位关联、成功空评分与失败保缓存、每轮预算；持续失败条目占预算是已知限制，不得把“轮换”理解成必定五轮覆盖全部 50 部。
+3. 看 `Models/ExternalSignalMeaning.swift`、`App/ExternalHeatTabView.swift`、`App/DetailSheet.swift`，确认来源标签、非热度提示和评分时间文案。前两类路径分别位于 `macos/Sources/WhatShotCore/` 与 `macos/Sources/WhatShotApp/`。
+4. **仍未验证**：新包实际窗口里的排版、配置→同步→详情交互。只读审查可给出检查建议；本交接不自动授权安装、重启应用或触发正式库同步。
+5. 输出问题、证据和严重程度；没有问题也应列清尚未验证项。用户未新增授权前，不修代码、不实施 B/C。
 
 ## 接手约定与交回要求
 
