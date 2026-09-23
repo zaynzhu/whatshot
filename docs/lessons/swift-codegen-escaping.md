@@ -3,6 +3,7 @@
 结论速览：
 - **方案**：LLM 批量改 Swift 优先用编辑工具做精准小段替换；必须用 heredoc+python 批量替换时，写完立刻 `od -c` 查真实字节（尤其 `\(` 插值与 keypath `\.`），别信"我写的就是对的"。
 - **适用**：macOS / Claude Code 会话中用 Bash heredoc + python 修改或生成 Swift 源码的场景。
+- **追加（2026-09-23）**：Swift 多行字符串字面量（"""）的定界符必须独占一行；python 往 Swift 写带双引号的 JSON 字面量时单双引号极易错位——小段代码用编辑工具直改最稳。
 
 ## ✅ 字符串字面量双反斜杠让 `\($0)` 插值失效（2026-09-22）
 
@@ -31,3 +32,14 @@
 - **为什么这样做**：JSON→heredoc→python→文件共四层转义，每层都可能差一个反斜杠；写错的表现是"编译错"或"静默替换失败"，都难以从现象反推。
 - **验证证据**：2026-09-22 会话多轮（ExternalHeatTabView 初稿 rankKey/双反斜杠插值、SwiftUI ForEach 修复脚本等）；python `SyntaxError: EOL while scanning string literal` 原样保留。
 - **易错点**：`s.replace` 无命中不报错——批量替换后必须打印验证（before/after 计数），否则静默无效。
+
+## ✅ Swift 多行字符串字面量（"""）定界符必须独占一行（2026-09-23）
+
+- **为何值得记**：生成测试 stub 的单行 JSON 时写成 `routes[x] = (200, """{"items":[]}""")`，编译报 `multi-line string literal content must begin on a new line`——报错指向定界符，但不指明"单行三引号"这个根因。
+- **最终方案**：多行字面量内容必须换行起；单行 JSON 用普通字符串 + 转义双引号：
+  ```swift
+  StubProtocol.routes["/api/trending"] = (200, "{\"items\":[]}")
+  ```
+- **为什么这样做**：Swift 多行字面量（"""）语法要求开定界符后必须换行、闭定界符前必须换行——单行内首尾内容直接非法。
+- **验证证据**：WhatsNewEngineTests.swift:346 编译错原文保留；改为单行转义字符串后编译通过（2026-09-23）。
+- **易错点**：python 往 Swift 里写含双引号的 JSON 字面量时，单引号包住内容（`'{\"items\":[]}'`）会生成 Swift 非法语法——Swift 无单引号字符串。生成后先编译再继续。
