@@ -57,3 +57,9 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 ## WhatsNew 豆瓣对照（2026-09-23 定案九）
 
 用户自有 WhatsNew 的豆瓣评分可独立缓存用于详情对照（投票数/采集时间），不覆盖 butai0 转载分、不参与排名；详情补查仍 ≤10 部/轮、≥2 秒限频，详情页仅读本地缓存。豆瓣榜单区分口碑/待播顺序/预约，不展示动态热度异动。库内海报借道仅调查，首播日借道暂缓，既有兜底链路不变。
+
+## WhatsNew 批量身份查询（2026-09-23 定案十）
+
+- 已对接 WhatsNew `POST /api/media/lookup`（契约 v1）：追剧条目按 movie/series 分批（每轮各 ≤1 请求）反查 WhatsNew，matched 的信号写 external_heat、评分写 external_media_details；unmatched（含单集 tt 号，WhatsNew 不桥接）如实跳过。**base URL 只走 settings.whatsnewBaseURL 可配置项，任何连调/测试地址不得硬编码进代码**。
+- **部署过渡语义**：生产 WhatsNew 未部署新版时 lookup 404 **静默降级**（不产 warning、不阻断主同步，部署后自动生效）；其他失败如实 warning。 WhatsNew 正式部署后**用户会把新地址回传**，届时仅需更新设置中的 whatsnewBaseURL，无需改代码。
+- WhatsNew 端契约变更走回传协商，不在 WhatShot 端静默适配。

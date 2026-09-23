@@ -235,3 +235,13 @@ WhatShot 聚焦**已播出影视的热度与播出进度**：
 - 沿用每轮最多 10 部详情与独立 ≥2 秒限频，按未检查/最久未检查轮换，包含 IMDb 已关联作品；缓存身份供未轮到的条目继续精确匹配。详情失败保留旧缓存，成功返回空评分则清除该作品旧评分；多榜席位不重复展示同一作品评分。详情页仅读本地缓存。
 - 只对稳定 ID 精确关联的本地作品展示评分；身份冲突不展示、不标题搜索。缺评分或尚未覆盖如实说明。
 - 不修改 WhatsNew 项目，不修改既有首播日、海报与 S3 镜像链路。
+
+### 定案十：WhatsNew 批量身份查询接入（2026-09-23）
+
+WhatsNew 端已交付只读批量身份查询端点（`POST /api/media/lookup`，契约 v1， WhatsNew commit `5806050`/`a24999a`），WhatShot 端对接：
+
+- **追剧反查**：每轮同步对追剧条目（≤20 条、按 movie/series 分批、每轮各 ≤1 次请求、2 秒限频）反查 WhatsNew——**不在 trending 50 部内的追剧作品也拿得到信号与评分**；matched 的信号写 `external_heat`（video_id 直填、外部热度页与详情展示"已关联"）、评分写 `external_media_details`（详情浮层评分对照自动生效）。unmatched（含单集 tt 号—— WhatsNew 不做单集桥接，WhatShot 库内剧集 tt 号多为该季第 1 集的单集号）如实跳过，不是 bug。
+- **三种"没有"分开**：unmatched（库内无此身份）/ matched + signals 空（在库但无当前信号）/ 4xx 请求级错误——消费方据此区分"没收录/下榜/查询坏了"。
+- **base URL 只走 settings.whatsnewBaseURL 可配置项**（连调用的测试实例地址不硬编码进任何代码，正式部署后用户回传新地址改设置即生效）。
+- **部署过渡**：生产 WhatsNew 未部署新版时 lookup 404 静默降级（不产 warning、不阻断主同步，部署后自动生效）；其他失败如实 warning。 WhatsNew 正式部署后**用户会把新地址回传**，无需 WhatShot 端改代码。
+- 实现提交 `1d9f303`（client+集成+6 测试）与 `141fa30`（404 降级），全量 117 项测试通过；交回摘要见 `docs/handoffs/whatsnew-batch-lookup-connect-handoff.md`。
