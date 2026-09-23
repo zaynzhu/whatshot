@@ -12,6 +12,7 @@ struct DetailSheet: View {
   @State private var observations: [VideoRepository.ObservationRow] = []
   @State private var watched = false
   /// 外部热度（2026-09-22 WhatsNew 可选接入）：匹配合作品的外部信号
+  @State private var externalDetails: [ExternalHeatStore.CachedDetail] = []
   @State private var externalSignals: [ExternalHeatStore.DisplayRow] = []
 
   var body: some View {
@@ -59,6 +60,8 @@ struct DetailSheet: View {
           }
         }
 
+        ratingComparison
+
         externalLinks
 
         watchlistButton
@@ -79,7 +82,7 @@ struct DetailSheet: View {
                   .foregroundStyle(Theme.accent)
                   .frame(width: 30, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
-                  Text(signal.source + signalRankingSuffix(signal))
+                  Text(ExternalSignalMeaning.label(for: signal.source) + signalRankingSuffix(signal))
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
@@ -142,7 +145,35 @@ struct DetailSheet: View {
   /// 外部信号（本地快照查询，零网络请求）
   private func loadExternalSignals() async {
     guard let queue = app.queue else { return }
-    externalSignals = (try? await ExternalHeatStore(queue: queue).signals(forVideo: video.id)) ?? []
+    let store = ExternalHeatStore(queue: queue)
+    externalSignals = (try? await store.signals(forVideo: video.id)) ?? []
+    externalDetails = (try? await store.details(forVideo: video.id)) ?? []
+  }
+
+  private var ratingComparison: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text("豆瓣评分 · 来源对照")
+        .font(.system(size: 11, weight: .semibold))
+      Text("butai0 转载：\(video.doubanScore ?? "暂无评分")")
+      if app.settings.whatsnewEnabled == true {
+        if externalDetails.isEmpty {
+          Text("WhatsNew：尚未取得可关联的评分数据")
+        }
+        ForEach(externalDetails, id: \.detail.id) { cached in
+          if let rating = cached.detail.doubanRating {
+            Text("WhatsNew：\(rating.value.formatted(.number.precision(.fractionLength(1)))) / 10 · \(rating.voteCount.map { "\($0) 人评价" } ?? "评价人数未知")")
+            Text("站方采集：\(rating.capturedAt ?? "未知")")
+          } else {
+            Text("WhatsNew：该作品暂无豆瓣评分")
+          }
+          Text("本地检查：\(cached.fetchedAt.formatted(date: .numeric, time: .shortened))")
+            .foregroundStyle(Theme.textTertiary)
+        }
+      }
+    }
+    .font(.system(size: 10.5))
+    .foregroundStyle(Theme.textSecondary)
+    .textSelection(.enabled)
   }
 
   /// 榜口径后缀：scope/window 非 overall/空才显示（可解释来源榜）

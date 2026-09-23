@@ -213,6 +213,12 @@ enum Schema {
   CREATE INDEX IF NOT EXISTS idx_ext_heat_video ON external_heat(video_id);
   CREATE INDEX IF NOT EXISTS idx_ext_heat_fetched ON external_heat(fetched_at);
 
+  CREATE TABLE IF NOT EXISTS external_media_details (
+    media_id TEXT PRIMARY KEY,
+    detail_json TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS external_heat_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_success_at INTEGER,           -- 最近一次成功响应的本地时间

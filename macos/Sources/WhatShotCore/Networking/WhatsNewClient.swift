@@ -71,17 +71,24 @@ public struct WhatsNewClient: Sendable {
     public var mediaItem: MediaItem?
   }
 
-  /// GET /api/media/:id —— 只取身份补匹配所需字段，其余忽略
-  public struct MediaDetail: Sendable, Equatable {
+  /// GET /api/media/:id —— 身份与豆瓣评分独立缓存，不写主数据评分
+  public struct MediaDetail: Sendable, Equatable, Codable {
     public var id: String
     public var imdbId: String?
     /// WhatsNew 无顶层 doubanId，豆瓣身份在 refs（source="douban"，sourceId="douban-<数字>"）
     public var sourceRefs: [SourceRef]
+    public var doubanRating: DoubanRating? = nil
 
-    public struct SourceRef: Sendable, Equatable {
+    public struct SourceRef: Sendable, Equatable, Codable {
       public var source: String
       public var sourceId: String
     }
+  }
+
+  public struct DoubanRating: Sendable, Equatable, Codable {
+    public var value: Double
+    public var voteCount: Int?
+    public var capturedAt: String?
   }
 
   // MARK: - 请求
@@ -131,13 +138,17 @@ public struct WhatsNewClient: Sendable {
     }
     let data = try await get("/api/media/\(id)")
     let raw = try Self.decode(MediaDetailPayload.self, from: data)
+    guard raw.id == id else {
+      throw WhatsNewError(message: "WhatsNew 详情身份不一致")
+    }
     return MediaDetail(
       id: raw.id ?? id,
       imdbId: raw.imdbId,
       sourceRefs: (raw.sourceRefs ?? []).compactMap { ref in
         guard let source = ref.source, let sourceId = ref.sourceId else { return nil }
         return .init(source: source, sourceId: sourceId)
-      }
+      },
+      doubanRating: raw.ratings?.compactMap(Self.parseDoubanRating).first
     )
   }
 
@@ -193,11 +204,29 @@ public struct WhatsNewClient: Sendable {
     var id: String?
     var imdbId: String?
     var sourceRefs: [SourceRefPayload]?
+    var ratings: [RatingPayload]?
 
     struct SourceRefPayload: Decodable {
       var source: String?
       var sourceId: String?
     }
+  }
+
+  struct RatingPayload: Decodable {
+    var source: String?
+    var audience: String?
+    var value: Double?
+    var scale: Int?
+    var voteCount: Int?
+    var capturedAt: String?
+  }
+
+  static func parseDoubanRating(_ rating: RatingPayload) -> DoubanRating? {
+    guard rating.source == "douban", rating.audience == "users", rating.scale == 10,
+          let value = rating.value, value.isFinite, (0...10).contains(value) else { return nil }
+    return DoubanRating(value: value,
+                        voteCount: rating.voteCount.flatMap { $0 >= 0 ? $0 : nil },
+                        capturedAt: rating.capturedAt)
   }
 
   private static func parseSignal(_ item: SignalPayload) -> Signal? {

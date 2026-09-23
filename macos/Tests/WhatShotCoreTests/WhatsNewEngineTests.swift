@@ -75,6 +75,12 @@ struct WhatsNewEngineTests {
     ]}
     """)
 
+    StubProtocol.routes["/api/media/m1"] = (200, """
+    {"id":"m1","imdbId":"tt1234567","sourceRefs":[],"ratings":[
+      {"source":"douban","audience":"users","value":8.2,"scale":10,"voteCount":1234,"capturedAt":"2026-09-22T01:02:03Z"}
+    ]}
+    """)
+
     let tmp = NSTemporaryDirectory() + "whatshot-wnengine2-\(UUID().uuidString).sqlite3"
     let queue = try DatabaseQueue(path: tmp)
     let repo = VideoRepository(queue: queue)
@@ -99,8 +105,8 @@ struct WhatsNewEngineTests {
 
     let summary = await engine.syncExternalHeat(whatsnew: client)
 
-    // 链路：health + trending 各 1 请求；信号入库且匹配到本地条目
-    #expect(StubProtocol.requestedPaths == ["/api/health", "/api/trending"])
+    // 已有 IMDb 匹配仍取详情评分，主数据与外部评分隔离
+    #expect(StubProtocol.requestedPaths == ["/api/health", "/api/trending", "/api/media/m1"])
     #expect(summary.fetched == 1)
     #expect(summary.withDate == 1)
     #expect(summary.warning == nil)
@@ -112,6 +118,75 @@ struct WhatsNewEngineTests {
     #expect(state.lastStatus == "ok")
     #expect(state.lastSignalCount == 1)
     #expect(state.lastMediaCount == 1)
+    let details = try await store.details(forVideo: 7)
+    #expect(details.count == 1)
+    #expect(details.first?.detail.doubanRating?.value == 8.2)
+    #expect(details.first?.detail.doubanRating?.voteCount == 1234)
+    #expect(details.first?.detail.doubanRating?.capturedAt == "2026-09-22T01:02:03Z")
+    #expect(rows.first?.video?.doubanScore == nil)
+
+    // 网络失败保留旧评分；成功的空评分清除旧值。
+    StubProtocol.routes["/api/media/m1"] = (503, "{}")
+    let failed = await engine.syncExternalHeat(whatsnew: client)
+    #expect(failed.warning != nil)
+    #expect(try await store.details(forVideo: 7).first?.detail.doubanRating?.value == 8.2)
+    StubProtocol.routes["/api/media/m1"] = (200, #"{"id":"m1","sourceRefs":[],"ratings":[]}"#)
+    _ = await engine.syncExternalHeat(whatsnew: client)
+    #expect(try await store.details(forVideo: 7).first?.detail.doubanRating == nil)
+
+  }
+
+  @Test func detailBudgetRotatesAndCachedIdentitySurvives() async throws {
+    reset()
+    stubHealth()
+    let (initialEngine, repo, store) = try makeEngine()
+    var engine = initialEngine
+    engine.whatsnewDetailBudgetPerRun = 1
+    _ = try await repo.upsert(WhatsNewTests().makeVideo(id: 9, doubanId: 123),
+                              chartScope: nil, chartRank: nil, now: Date())
+    StubProtocol.routes["/api/trending"] = (200, """
+    {"items":[
+      {"id":"s1","mediaItemId":"m1","source":"douban_top","mediaItem":{"id":"m1","mediaType":"series"}},
+      {"id":"s2","mediaItemId":"m1","source":"douban_upcoming_hot","mediaItem":{"id":"m1","mediaType":"series"}},
+      {"id":"s3","mediaItemId":"m2","source":"trakt_trending","mediaItem":{"id":"m2","mediaType":"series"}}
+    ]}
+    """)
+    StubProtocol.routes["/api/media/m1"] = (200, """
+    {"id":"m1","sourceRefs":[{"source":"douban","sourceId":"douban-123"}],"ratings":[
+      {"source":"douban","audience":"users","value":9,"scale":10}
+    ]}
+    """)
+    StubProtocol.routes["/api/media/m2"] = (200, #"{"id":"m2","sourceRefs":[],"ratings":[]}"#)
+    _ = await engine.syncExternalHeat(whatsnew: makeClient())
+    #expect(StubProtocol.requestedPaths.filter { $0.hasPrefix("/api/media/") } == ["/api/media/m1"])
+    #expect(try await store.details(forVideo: 9).count == 1)
+    StubProtocol.requestedPaths = []
+    _ = await engine.syncExternalHeat(whatsnew: makeClient())
+    #expect(StubProtocol.requestedPaths.filter { $0.hasPrefix("/api/media/") } == ["/api/media/m2"])
+    #expect(try await store.displayRows().filter { $0.video?.id == 9 }.count == 2)
+    #expect(try await store.details(forVideo: 9).first?.detail.doubanRating?.value == 9)
+  }
+
+  @Test func detailConflictDoesNotExposeRating() async throws {
+    reset()
+    stubHealth()
+    let (engine, repo, store) = try makeEngine()
+    _ = try await repo.upsert(WhatsNewTests().makeVideo(id: 1, imdb: "tt111"),
+                              chartScope: nil, chartRank: nil, now: Date())
+    _ = try await repo.upsert(WhatsNewTests().makeVideo(id: 2, doubanId: 222),
+                              chartScope: nil, chartRank: nil, now: Date())
+    StubProtocol.routes["/api/trending"] = (200, """
+    {"items":[{"id":"s1","mediaItemId":"m1","source":"trakt_trending",
+    "mediaItem":{"id":"m1","mediaType":"series","imdbId":"tt111"}}]}
+    """)
+    StubProtocol.routes["/api/media/m1"] = (200, """
+    {"id":"m1","sourceRefs":[{"source":"douban","sourceId":"douban-222"}],
+    "ratings":[{"source":"douban","audience":"users","value":8,"scale":10}]}
+    """)
+    _ = await engine.syncExternalHeat(whatsnew: makeClient())
+    #expect(try await store.displayRows().first?.video == nil)
+    #expect(try await store.details(forVideo: 1).isEmpty)
+    #expect(try await store.details(forVideo: 2).isEmpty)
   }
 
   // MARK: - 失败路径

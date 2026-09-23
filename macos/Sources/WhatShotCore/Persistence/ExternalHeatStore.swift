@@ -99,7 +99,8 @@ public struct ExternalHeatStore: Sendable {
   /// 事务 upsert 一批信号（一次成功响应一个事务，整批同 fetched_at）。
   /// 返回实际写入（含覆盖）行数。任一失败整批回滚，旧快照不被半批替换
   @discardableResult
-  public func upsertSignals(_ rows: [SignalUpsert], fetchedAt: Date) async throws -> Int {
+  public func upsertSignals(_ rows: [SignalUpsert], fetchedAt: Date,
+                            details: [WhatsNewClient.MediaDetail] = []) async throws -> Int {
     guard !rows.isEmpty else { return 0 }
     let nowSeconds = Int(fetchedAt.timeIntervalSince1970)
     return try await queue.run { db in
@@ -128,6 +129,14 @@ public struct ExternalHeatStore: Sendable {
       var written = 0
       for row in rows {
         let signal = row.signal
+        // 同作品旧榜单席位也更新身份，避免截断保留的席位把新评分关联给旧条目。
+        let matchStmt = try db.prepare("UPDATE external_heat SET video_id=?, match_basis=? WHERE media_id=?")
+        SQLiteDatabase.bind(matchStmt, 1, row.match?.videoID)
+        SQLiteDatabase.bind(matchStmt, 2, row.match?.basis.rawValue)
+        SQLiteDatabase.bind(matchStmt, 3, signal.mediaItemId)
+        let matchStatus = sqlite3_step(matchStmt)
+        sqlite3_finalize(matchStmt)
+        guard matchStatus == SQLITE_DONE else { throw DatabaseError(message: "外部作品身份更新失败") }
         SQLiteDatabase.bind(stmt, 1, signal.mediaItemId)
         SQLiteDatabase.bind(stmt, 2, signal.source)
         SQLiteDatabase.bind(stmt, 3, nil as String?) // sourceCategory：trending 未返回，留待扩展
@@ -155,6 +164,20 @@ public struct ExternalHeatStore: Sendable {
         }
         sqlite3_reset(stmt)
         written += 1
+      }
+      for detail in details {
+        let payload = String(decoding: try JSONEncoder().encode(detail), as: UTF8.self)
+        let detailStmt = try db.prepare("""
+          INSERT INTO external_media_details (media_id, detail_json, fetched_at) VALUES (?,?,?)
+          ON CONFLICT(media_id) DO UPDATE SET detail_json=excluded.detail_json, fetched_at=excluded.fetched_at
+          """)
+        defer { sqlite3_finalize(detailStmt) }
+        SQLiteDatabase.bind(detailStmt, 1, detail.id)
+        SQLiteDatabase.bind(detailStmt, 2, payload)
+        SQLiteDatabase.bind(detailStmt, 3, nowSeconds)
+        guard sqlite3_step(detailStmt) == SQLITE_DONE else {
+          throw DatabaseError(message: "外部评分缓存写入失败")
+        }
       }
       try db.exec("COMMIT")
       committed = true
@@ -184,6 +207,46 @@ public struct ExternalHeatStore: Sendable {
         throw DatabaseError(message: "外部热度状态写入失败")
       }
     }
+  }
+
+  public struct CachedDetail: Sendable, Equatable {
+    public var detail: WhatsNewClient.MediaDetail
+    public var fetchedAt: Date
+  }
+
+  /// 仅点查本次有限作品集合，不加载全部历史。
+  public func cachedDetails(mediaIDs: [String]) async throws -> [String: CachedDetail] {
+    guard !mediaIDs.isEmpty else { return [:] }
+    return try await queue.run { db in
+      let placeholders = mediaIDs.map { _ in "?" }.joined(separator: ",")
+      let stmt = try db.prepare("SELECT media_id, detail_json, fetched_at FROM external_media_details WHERE media_id IN (\(placeholders))")
+      defer { sqlite3_finalize(stmt) }
+      for (index, id) in mediaIDs.enumerated() { SQLiteDatabase.bind(stmt, Int32(index + 1), id) }
+      var result: [String: CachedDetail] = [:]
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        guard let id = db.text(stmt, 0), let payload = db.text(stmt, 1),
+              let seconds = db.int(stmt, 2) else { continue }
+        let detail = try JSONDecoder().decode(WhatsNewClient.MediaDetail.self, from: Data(payload.utf8))
+        result[id] = CachedDetail(detail: detail, fetchedAt: Date(timeIntervalSince1970: Double(seconds)))
+      }
+      return result
+    }
+  }
+
+  /// 只通过当前精确关联读评分；多个榜单席位不重复展示。
+  public func details(forVideo videoID: Int) async throws -> [CachedDetail] {
+    let ids: [String] = try await queue.run { db in
+      let stmt = try db.prepare("SELECT DISTINCT media_id FROM external_heat WHERE video_id=? AND is_current=1 ORDER BY media_id")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, videoID)
+      var ids: [String] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let id = db.text(stmt, 0) { ids.append(id) }
+      }
+      return ids
+    }
+    let cached = try await cachedDetails(mediaIDs: ids)
+    return ids.compactMap { cached[$0] }
   }
 
   // MARK: - 查询

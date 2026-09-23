@@ -48,6 +48,57 @@ struct WhatsNewTests {
     )
   }
 
+  @Test func doubanScoreValidation() throws {
+    let data = Data("""
+    {"ratings":[
+      {"source":"imdb","audience":"users","value":9,"scale":10},
+      {"source":"douban","audience":"users","value":80,"scale":100},
+      {"source":"douban","audience":"users","value":11,"scale":10},
+      {"source":"douban","audience":"users","value":8,"scale":10,"voteCount":-1},
+      {"source":"douban","audience":"users","scale":10}
+    ]}
+    """.utf8)
+    let raw = try JSONDecoder().decode(WhatsNewClient.MediaDetailPayload.self, from: data)
+    let ratings = (raw.ratings ?? []).compactMap(WhatsNewClient.parseDoubanRating)
+    #expect(ratings.count == 1)
+    #expect(ratings.first?.value == 8)
+    #expect(ratings.first?.voteCount == nil)
+    #expect(ratings.first?.capturedAt == nil)
+  }
+
+  @Test func doubanSignalSemantics() {
+    #expect(ExternalSignalMeaning.label(for: "douban_top").contains("口碑"))
+    #expect(ExternalSignalMeaning.label(for: "douban_upcoming").contains("待播顺序"))
+    #expect(ExternalSignalMeaning.label(for: "douban_upcoming_hot").contains("预约"))
+    #expect(ExternalSignalMeaning.isDoubanNonHeat("douban_top"))
+    #expect(!ExternalSignalMeaning.isDoubanNonHeat("trakt_trending"))
+    #expect(ExternalSignalMeaning.label(for: "unknown") == "unknown")
+  }
+
+  @Test func ratingWriteFailureRollsBackSignals() async throws {
+    let repo = try makeRepo()
+    let store = try makeStore(queue: repo.queue)
+    func row(rank: Int) -> ExternalHeatStore.SignalUpsert {
+      .init(signal: makeSignal(id: "s1", mediaItemId: "m1", rank: rank),
+            mediaTitle: "作品", mediaType: "series", posterURL: nil,
+            firstReleaseDate: nil, match: nil)
+    }
+    _ = try await store.upsertSignals([row(rank: 3)], fetchedAt: Date())
+    try await repo.queue.run { db in
+      try db.exec("""
+        CREATE TRIGGER reject_detail BEFORE INSERT ON external_media_details
+        BEGIN SELECT RAISE(ABORT, '测试评分写入失败'); END;
+        """)
+    }
+    do {
+      _ = try await store.upsertSignals([row(rank: 9)], fetchedAt: Date(),
+                                        details: [.init(id: "m1", imdbId: nil, sourceRefs: [])])
+      Issue.record("预期事务失败")
+    } catch {}
+    #expect(try await store.displayRows().first?.rank == 3)
+    #expect(try await store.cachedDetails(mediaIDs: ["m1"]).isEmpty)
+  }
+
   // MARK: - 匹配器
 
   /// IMDb 精确命中（大小写规范后相等）

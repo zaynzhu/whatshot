@@ -586,7 +586,6 @@ public struct SyncEngine: Sendable {
   /// fetched=信号条数，withDate=匹配到本地条目数，warning=失败摘要）
   func syncExternalHeat(whatsnew: WhatsNewClient) async -> PremiereBackfillSummary {
     let store = ExternalHeatStore(queue: repo.queue)
-    let fetchedAt = clock()
     do {
       // 1. 服务身份验认：HTML、错误服务或沙箱占位都不算成功
       _ = try await whatsnew.fetchHealth()
@@ -594,51 +593,43 @@ public struct SyncEngine: Sendable {
       // 2. trending（无筛选 = 工作中心视图：≤50 部活跃作品及其全部当前信号）
       let signals = try await whatsnew.fetchTrending()
 
-      // 3. 本地身份点查（点查 IN 命中，不全量载入——8GB 内存约束）
-      let imdbs = signals.compactMap { $0.mediaItem?.imdbId }
-      let identities = (try? await store.localIdentities(imdbs: imdbs, doubans: [])) ?? []
-      var matches: [String: ExternalHeatMatcher.Match] = [:]
-      var doubanRefs: [String: [Int]] = [:]      // mediaItemId → 豆瓣 subject 数字
-      var needDetail: [String: (imdbId: String?, mediaType: String?)] = [:]
-
-      for signal in signals {
-        guard let media = signal.mediaItem else { continue }
-        let match = ExternalHeatMatcher.match(mediaIMDb: media.imdbId,
-                                              mediaType: media.mediaType,
-                                              doubanRefs: [], local: identities)
-        if let match {
-          matches[signal.id] = match
-        } else {
-          // 未匹配：本轮对其作品（每 media 只一次）限量查 detail 补豆瓣身份
-          needDetail[media.id] = (media.imdbId, media.mediaType)
-        }
+      // 身份与评分共用详情预算：未检查/最久未检查优先，IMDb 已匹配作品也参与。
+      let mediaIDs = Set(signals.compactMap { $0.mediaItem?.id }).sorted()
+      let cached = try await store.cachedDetails(mediaIDs: mediaIDs)
+      var details = cached.mapValues(\.detail)
+      let candidates = mediaIDs.sorted {
+        let left = cached[$0]?.fetchedAt ?? .distantPast
+        let right = cached[$1]?.fetchedAt ?? .distantPast
+        return left == right ? $0 < $1 : left < right
       }
-
-      // 4. 有限 detail 补查豆瓣 refs（预算内、2 秒限频在客户端内；失败跳过该条）
-      var matchedCount = matches.values.map(\.videoID).count
-      for mediaID in needDetail.keys.prefix(whatsnewDetailBudgetPerRun) {
+      var refreshed: [WhatsNewClient.MediaDetail] = []
+      var detailFailures = 0
+      for mediaID in candidates.prefix(whatsnewDetailBudgetPerRun) {
         if Task.isCancelled { break }
-        guard let info = needDetail[mediaID] else { continue }
-        let refs: [WhatsNewClient.MediaDetail.SourceRef]
         do {
           let detail = try await whatsnew.fetchMediaDetail(id: mediaID)
-          refs = detail.sourceRefs
+          details[mediaID] = detail
+          refreshed.append(detail)
         } catch {
-          continue // 单条抖动/未覆盖跳过，下轮重试；不是致命失败
-        }
-        let doubanIds = ExternalHeatMatcher.doubanIds(in: refs)
-        guard !doubanIds.isEmpty else { continue }
-        let local = (try? await store.localIdentities(imdbs: [], doubans: doubanIds)) ?? []
-        for signal in signals where signal.mediaItemId == mediaID {
-          if matches[signal.id] == nil,
-             let match = ExternalHeatMatcher.match(mediaIMDb: info.imdbId,
-                                                   mediaType: info.mediaType,
-                                                   doubanRefs: doubanIds, local: local) {
-            matches[signal.id] = match
-            matchedCount += 1
-          }
+          detailFailures += 1 // 失败保留旧值，成功的空评分会覆盖旧值
         }
       }
+      let imdbs = signals.compactMap { $0.mediaItem?.imdbId }
+        + details.values.compactMap(\.imdbId)
+      let doubans = details.values.flatMap { ExternalHeatMatcher.doubanIds(in: $0.sourceRefs) }
+      let identities = try await store.localIdentities(imdbs: imdbs, doubans: doubans)
+      var matches: [String: ExternalHeatMatcher.Match] = [:]
+      for signal in signals {
+        guard let media = signal.mediaItem else { continue }
+        let detail = details[media.id]
+        // 详情与榜单 IMDb 不一致时保守跳过，不把评分贴给错误作品。
+        if let old = media.imdbId, let fresh = detail?.imdbId,
+           ExternalHeatMatcher.normalizedIMDb(old) != ExternalHeatMatcher.normalizedIMDb(fresh) { continue }
+        matches[signal.id] = ExternalHeatMatcher.match(
+          mediaIMDb: detail?.imdbId ?? media.imdbId, mediaType: media.mediaType,
+          doubanRefs: ExternalHeatMatcher.doubanIds(in: detail?.sourceRefs ?? []), local: identities)
+      }
+      let matchedCount = matches.count
 
       // 5. 事务写库（一个成功响应一个事务；不删除本次未返回的行——
       // trending 50 条截断下"未返回"只能解释为范围未覆盖）
@@ -653,7 +644,7 @@ public struct SyncEngine: Sendable {
           match: matches[signal.id]
         )
       }
-      let wrote = try await store.upsertSignals(rows, fetchedAt: clock())
+      let wrote = try await store.upsertSignals(rows, fetchedAt: clock(), details: refreshed)
       let mediaCount = Set(signals.map(\.mediaItemId)).count
       try await store.setState(
         .init(lastSuccessAt: clock(), lastStatus: "ok", lastError: nil,
@@ -661,7 +652,8 @@ public struct SyncEngine: Sendable {
         at: clock()
       )
       progress("外部热度", wrote)
-      return PremiereBackfillSummary(fetched: signals.count, withDate: matchedCount, warning: nil)
+      return PremiereBackfillSummary(fetched: signals.count, withDate: matchedCount,
+                                     warning: detailFailures == 0 ? nil : "WhatsNew 部分详情未更新（\(detailFailures) 部），保留本地缓存")
     } catch {
       // 失败保留上次有效缓存（不写库不清行），状态如实记录；只计 warning
       let status: String

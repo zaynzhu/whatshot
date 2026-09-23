@@ -154,16 +154,23 @@ struct ExternalHeatTabView: View {
 
   /// 来源 chips：单选一个来源榜（不同榜单名次不可比，不做"全部"混排）。
   /// 默认选中"组内最优名次"的来源（热度优先）
-  private var sourceChips: some View {
-    let groups = Dictionary(grouping: rows, by: \.source)
+  private var sourceGroups: [(source: String, signals: [ExternalHeatStore.DisplayRow])] {
+    Dictionary(grouping: rows, by: \.source)
       .map { (source: $0.key, signals: $0.value) }
       .sorted {
-        let l = $0.signals.compactMap(\.rank).min() ?? 999
-        let r = $1.signals.compactMap(\.rank).min() ?? 999
-        return l == r ? $0.source < $1.source : l < r
+        let left = $0.signals.compactMap(\.rank).min() ?? 999
+        let right = $1.signals.compactMap(\.rank).min() ?? 999
+        return left == right ? $0.source < $1.source : left < right
       }
-    // 选中项失效（新快照来源变了）时回落展示第一名组；点击时才真正写回
-    let current = groups.contains(where: { $0.source == selectedSource }) ? selectedSource : groups.first?.source
+  }
+
+  private var currentSource: String? {
+    sourceGroups.contains { $0.source == selectedSource } ? selectedSource : sourceGroups.first?.source
+  }
+
+  private var sourceChips: some View {
+    let groups = sourceGroups
+    let current = currentSource
 
     return ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
@@ -173,7 +180,7 @@ struct ExternalHeatTabView: View {
             selectedSource = group.source
           } label: {
             HStack(spacing: 5) {
-              Text(group.source)
+              Text(ExternalSignalMeaning.label(for: group.source))
                 .font(.system(size: 11, weight: selected ? .bold : .medium).monospacedDigit())
               Text("\(group.signals.count)")
                 .font(.system(size: 10).monospacedDigit())
@@ -200,12 +207,19 @@ struct ExternalHeatTabView: View {
 
   /// 选中来源的网格（同剧集/电影页画廊；行内按名次排）
   private var gridSection: some View {
-    let current = selectedSource ?? Dictionary(grouping: rows, by: \.source)
-      .min { ($0.value.compactMap(\.rank).min() ?? 999) < ($1.value.compactMap(\.rank).min() ?? 999) }?.key
+    let current = currentSource
     let signals = rows.filter { $0.source == current }
       .sorted { ($0.rank ?? 999) < ($1.rank ?? 999) }
 
     return ScrollView {
+      if let current, let explanation = ExternalSignalMeaning.explanation(for: current) {
+        Text(explanation)
+          .font(.system(size: 11))
+          .foregroundStyle(Theme.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 20)
+          .padding(.top, 12)
+      }
       LazyVGrid(columns: columns, spacing: 18) {
         ForEach(signals, id: \.id) { row in
           signalCard(row)
@@ -266,18 +280,20 @@ struct ExternalHeatTabView: View {
             .font(.system(size: 9.5).monospacedDigit())
           Spacer()
           // 名次变化：贴着采集时间放大一号，看得见
-          if let delta = row.rankDelta, delta > 0 {
-            Text("↑\(delta)")
-              .font(.system(size: 11, weight: .heavy).monospacedDigit())
-              .foregroundStyle(Theme.accent)
-          } else if let delta = row.rankDelta, delta < 0 {
-            Text("↓\(-delta)")
-              .font(.system(size: 11, weight: .heavy).monospacedDigit())
-              .foregroundStyle(Theme.textTertiary)
-          } else if row.previousRank == nil, row.rank != nil {
-            Text("NEW")
-              .font(.system(size: 9.5, weight: .heavy))
-              .foregroundStyle(Theme.accent)
+          if !ExternalSignalMeaning.isDoubanNonHeat(row.source) {
+            if let delta = row.rankDelta, delta > 0 {
+              Text("↑\(delta)")
+                .font(.system(size: 11, weight: .heavy).monospacedDigit())
+                .foregroundStyle(Theme.accent)
+            } else if let delta = row.rankDelta, delta < 0 {
+              Text("↓\(-delta)")
+                .font(.system(size: 11, weight: .heavy).monospacedDigit())
+                .foregroundStyle(Theme.textTertiary)
+            } else if row.previousRank == nil, row.rank != nil {
+              Text("NEW")
+                .font(.system(size: 9.5, weight: .heavy))
+                .foregroundStyle(Theme.accent)
+            }
           }
         }
         .font(.system(size: 9.5).monospacedDigit())
