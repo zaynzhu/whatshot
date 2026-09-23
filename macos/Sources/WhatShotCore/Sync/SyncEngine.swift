@@ -216,7 +216,7 @@ public struct SyncEngine: Sendable {
             try await client.fetchDetail(id: doubanID)
           }
           // 详情接口的 tp 与站点归类矛盾（会把剧集标成电影），只补全字段不覆盖已有分类
-          _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock(), preserveKind: true)
+          _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock())
           try await repo.markDetailSynced(videoID: detail.id, at: clock())
           detailCount += 1
         } catch {
@@ -572,7 +572,7 @@ public struct SyncEngine: Sendable {
           try await client.fetchDetail(id: candidate.doubanId)
         }
         // 与常规详情补拉同口径：只补全字段不覆盖已有分类
-        _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock(), preserveKind: true)
+        _ = try await repo.upsert(detail, chartScope: nil, chartRank: nil, now: clock())
         try await repo.markDetailSynced(videoID: detail.id, at: clock())
         checked += 1
       } catch {

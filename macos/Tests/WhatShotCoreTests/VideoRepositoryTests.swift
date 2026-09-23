@@ -21,6 +21,34 @@ struct VideoRepositoryTests {
     )
   }
 
+  /// 分类一经入库不再被覆盖：同条目在站点的电影页（kind=1）与剧集页（kind=2）都出现时，
+  /// 列表拉取互相覆盖会让条目在两个 tab 间闪烁（2026-09-23 修复）
+  @Test func upsertKeepsExistingKind() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    // 首次从剧集页入库 kind=2
+    _ = try await repo.upsert(makeVideo(id: 1, ejs: "更新至9集"), chartScope: nil, chartRank: nil, now: now)
+    // 站点电影页也收录了它（kind=1 的行再 upsert）——剧集分类保留，不闪回电影
+    var asMovie = makeVideo(id: 1, ejs: "更新至9集")
+    asMovie.kind = .movie
+    _ = try await repo.upsert(asMovie, chartScope: nil, chartRank: nil, now: now)
+    let row = try await repo.video(id: 1)
+    #expect(row?.kind == .tvSeries)
+    // 新条目仍用来源 kind（首次入库语义不变）
+    var movieOnly = makeVideo(id: 2)
+    movieOnly.kind = .movie
+    _ = try await repo.upsert(movieOnly, chartScope: nil, chartRank: nil, now: now)
+    let row2 = try await repo.video(id: 2)
+    #expect(row2?.kind == .movie)
+    // 错标为电影（kind=1）的剧集，后来被剧集页（kind=2）拉到时升级自愈
+    var misfiled = makeVideo(id: 3)
+    misfiled.kind = .movie
+    _ = try await repo.upsert(misfiled, chartScope: nil, chartRank: nil, now: now)
+    _ = try await repo.upsert(makeVideo(id: 3), chartScope: nil, chartRank: nil, now: now)
+    let row3 = try await repo.video(id: 3)
+    #expect(row3?.kind == .tvSeries)
+  }
+
   /// 首次入库不算变化；同状态重复不变化；ejs 或 seed 变化才报告变化
   @Test func upsertChangeDetection() async throws {
     let repo = try makeRepo()

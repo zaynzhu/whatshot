@@ -12,21 +12,23 @@ public struct VideoRepository: Sendable {
   // MARK: - 写入
 
   /// upsert 条目并记录观察。返回是否发生了用户关心的变化（ejs/seed/评分）
-  /// preserveKind=true 时保留库内已有分类（详情接口的 tp 与站点归类矛盾，不得覆盖列表来源的分类）
-  public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date,
-                     preserveKind: Bool = false) async throws -> Bool {
+  public func upsert(_ video: ButaiVideo, chartScope: ButaiChartScope?, chartRank: Int?, now: Date) async throws -> Bool {
     let changed = try await upsertBatch(
-      [(video: video, rank: chartRank)], chartScope: chartScope,
-      observedAt: now, preserveKind: preserveKind
+      [(video: video, rank: chartRank)], chartScope: chartScope, observedAt: now
     )
     return changed > 0
   }
 
   /// 事务写入一批条目（一个榜单或一页列表）。整批共享一个观察时间戳（latestChart 按
   /// scope 内 MAX(observed_at) 单秒切片，逐条各取时间跨秒会缺榜）；任一条失败整批回滚，
-  /// 旧榜不被半批数据替换。返回发生变化的条数
+  /// 旧榜不被半批数据替换。返回发生变化的条数。
+  /// 分类规则（2026-09-23 定案）：kind 只升不降——剧集（2）一经写入恒保留；电影（1）
+  /// 被剧集类来源（剧集页 sa=2 / 可信 tp / 详情）拉到时升级为 2。同一条目常同时出现在
+  /// 站点的电影页与剧集页（2026-09-12 实测），互相覆盖 kind 会让条目在两个 tab 间闪烁；
+  /// 详情 tp 的错误方向是把剧集标成电影（preserveKind 旧定案），"只升不降"同时消闪烁、
+  /// 允许错标剧集自愈，且详情 tp=1 不会再把剧集降级
   public func upsertBatch(_ items: [(video: ButaiVideo, rank: Int?)], chartScope: ButaiChartScope?,
-                          observedAt: Date, preserveKind: Bool = false) async throws -> Int {
+                          observedAt: Date) async throws -> Int {
     guard !items.isEmpty else { return 0 }
     let nowSeconds = Int(observedAt.timeIntervalSince1970)
     let scopeRaw = chartScope?.rawValue
@@ -37,7 +39,7 @@ public struct VideoRepository: Sendable {
       var changedCount = 0
       for item in items {
         if try writeEntry(db, video: item.video, scopeRaw: scopeRaw, chartRank: item.rank,
-                          nowSeconds: nowSeconds, preserveKind: preserveKind) {
+                          nowSeconds: nowSeconds) {
           changedCount += 1
         }
       }
@@ -49,7 +51,7 @@ public struct VideoRepository: Sendable {
 
   /// 单条写入：videos upsert + 观察记录。只负责 SQL，须在已开启的事务内调用
   private func writeEntry(_ db: SQLiteDatabase, video: ButaiVideo, scopeRaw: String?, chartRank: Int?,
-                          nowSeconds: Int, preserveKind: Bool) throws -> Bool {
+                          nowSeconds: Int) throws -> Bool {
     let videoID = video.id
     let seedCount = video.seedCount
     let netdiskCount = video.netdiskCount
@@ -71,8 +73,8 @@ public struct VideoRepository: Sendable {
 
     changed = previous && (prevEjs != ejs || prevSeed != seedCount || prevWp != netdiskCount || prevDouban != douban || prevImdb != imdb)
 
-    // 2. upsert 条目；preserveKind 时分类保留库内值（详情回写场景）
-    let kindAssign = preserveKind ? "kind=videos.kind," : "kind=excluded.kind,"
+    // 2. upsert 条目；UPDATE 分类只升不降（INSERT 用来源值，见 upsertBatch 注释）
+    let kindAssign = "kind=CASE WHEN videos.kind = 2 THEN 2 ELSE excluded.kind END,"
     let upsert = """
       INSERT INTO videos (id, kind, title, otitle, alias, douban_id, imdb_number, episode_status, episodes,
         douban_score, imdb_score, poster_url, class_names, production_area, years, release_info,
