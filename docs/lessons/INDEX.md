@@ -8,3 +8,4 @@
 | [swift-testing-parallel-stub-pollution.md](swift-testing-parallel-stub-pollution.md) | Swift Testing 默认并行下 URLProtocol stub 共享 static 状态交叉污染，失败落在无关断言上 | ✅ 有现成方案 | 2026-09-23 |
 | [sqlite-multi-source-kind-overwrite.md](sqlite-multi-source-kind-overwrite.md) | 多来源 upsert 互相覆盖枚举字段，条目在两个分类视图间闪烁 | ✅ 有现成方案 | 2026-09-23 |
 | [client-server-deployment-skew.md](client-server-deployment-skew.md) | 客户端先行接入新端点而服务端未部署：404 静默降级 vs 如实报警的取舍 | ✅ 有现成方案 | 2026-09-23 |
+| [macos-open-silent-failure.md](macos-open-silent-failure.md) | `open` 返回成功但打包 App 进程不存在（两次），原因未定位——交付后必须 ps 验证 | 🔶 部分可用 | 2026-09-24 |
