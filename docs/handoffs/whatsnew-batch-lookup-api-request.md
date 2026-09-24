@@ -1,5 +1,7 @@
 # WhatsNew 接口需求交接：批量身份查询端点（WhatShot 消费方提出）
 
+> **状态（2026-09-24）**：本文档为需求建议稿，已实施完成——WhatsNew 端交付 `POST /api/media/lookup`（契约 v1）并对生产 NAS 部署验收通过。**最终契约与对接事实以 `whatsnew-batch-lookup-connect-handoff.md`（含交回摘要与修订）为准**，本文的契约建议不再作为对接依据，仅存背景。
+
 ## 立即接手
 
 - 交接类型：发送端，需求转执行；下一位角色：**WhatsNew 项目的执行 agent**（本文档放在 WhatShot 仓库是因为需求方不能改 `../whatsnew`，路径由用户转达）。
