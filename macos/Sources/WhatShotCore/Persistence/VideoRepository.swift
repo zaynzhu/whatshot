@@ -616,6 +616,20 @@ public struct VideoRepository: Sendable {
     }
   }
 
+  /// 403 条目级退避（2026-09-29）：只置 premiere_fetched_at，获得与 no_date 同口径的 24h 重查退避；
+  /// 不动 premiere_date/source（防覆盖豆瓣已有值），403 观测已由 douban_requests 如实记录
+  public func markPremiereBlocked(doubanId: Int, at: Date) async throws {
+    try await queue.run { db in
+      let stmt = try db.prepare("UPDATE videos SET premiere_fetched_at = ? WHERE douban_id = ?")
+      defer { sqlite3_finalize(stmt) }
+      SQLiteDatabase.bind(stmt, 1, Int(at.timeIntervalSince1970))
+      SQLiteDatabase.bind(stmt, 2, doubanId)
+      guard sqlite3_step(stmt) == SQLITE_DONE else {
+        throw DatabaseError(message: "首播日退避写入失败")
+      }
+    }
+  }
+
   /// 用 IMDb 号写入 TMDB 分季首播日（一期例外扩大，2026-09-15）。
   /// 与豆瓣路径分源：只在 premiere_date 为空时补，永不覆盖豆瓣已有值；source 记 'tmdb' 可反查回滚。
   /// 返回是否实际写入（已有日期则不改，返回 false）。date 必须非空（无日期不写库、不置 fetched 位，

@@ -339,8 +339,10 @@ public struct SyncEngine: Sendable {
   }
 
   /// 补全一批首播日。返回 warning（nil = 本批无异常）。
-  /// 停批规则：429 等待 Retry-After 后放弃本批；401/403/安全页立即停批——不重试不绕过。
-  /// 每条请求无条件写 douban_requests（风控观测，只写不读）
+  /// 停批规则（2026-09-29 修订）：429 等待 Retry-After 后放弃本批；401 立即停批；
+  /// 403 批内首次视为条目级（豆瓣对单条目的限制——实测《史莱姆》38232831 连续 12 轮稳定 403
+  /// 而同轮其余 60 条全 200，IP 未被封）——只置 24h 重查退避继续本批；同批第 2 次 403
+  /// （另一条目同样被拒）才判 IP 级风控，维持停批。每条请求无条件写 douban_requests（风控观测）。
   func backfillPremieres(douban: DoubanClient, runId: Int = 0) async -> PremiereBackfillSummary {
     let pending = (try? await repo.premierePendingCount()) ?? 0
     guard pending > 0 else { return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil) }
@@ -348,6 +350,7 @@ public struct SyncEngine: Sendable {
     let candidates = (try? await repo.premiereCandidates(limit: limit)) ?? []
     var withDate = 0
     var blocked: String?
+    var seenBlocked403 = false
     for (index, doubanId) in candidates.enumerated() {
       if Task.isCancelled { break }
       do {
@@ -363,6 +366,19 @@ public struct SyncEngine: Sendable {
         let wait = retryAfter.map { "（等待 \($0) 秒后放弃本批）" } ?? ""
         blocked = "豆瓣限流，本批补全中止\(wait)；已补 \(withDate) 部，剩余下轮继续"
         break
+      } catch DoubanClient.DoubanError.blocked(let status) where status == 403 {
+        try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: status,
+                                            outcome: "blocked", runId: runId, at: clock())
+        if seenBlocked403 {
+          // 批内第 2 次 403：另一条目也被拒 → IP 级风控，停批
+          blocked = "豆瓣拒绝访问(HTTP \(status))，本批补全中止；已补 \(withDate) 部，剩余下轮继续"
+          break
+        }
+        // 批内第 1 次 403：条目级（该条目被豆瓣单独限制，非 IP 风控）。
+        // 24h 退避出队，继续下一条——下一条正常返回即证明非风控
+        seenBlocked403 = true
+        try? await repo.markPremiereBlocked(doubanId: doubanId, at: clock())
+        continue
       } catch DoubanClient.DoubanError.blocked(let status) {
         try? await repo.recordDoubanRequest(doubanId: doubanId, batchIndex: index + 1, httpStatus: status,
                                             outcome: "blocked", runId: runId, at: clock())
