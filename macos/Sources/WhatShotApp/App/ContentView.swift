@@ -86,18 +86,20 @@ struct ContentView: View {
           }
         } else {
           if let error = app.lastError {
-            statusButton(text: "同步出错", color: .red.opacity(0.9), help: error)
+            statusButton(text: { _ in "同步出错" }, color: .red.opacity(0.9), help: error)
           } else if let warning = app.lastWarning {
             // 琥珀提示带上距上次同步的相对时间：几小时前的老问题和刚发生的问题观感不同
-            let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0))" } ?? ""
-            statusButton(text: "部分完成\(ago)", color: Theme.accent,
+            statusButton(text: { now in
+              let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0, relativeTo: now))" } ?? ""
+              return "部分完成\(ago)"
+            }, color: Theme.accent,
                          help: warning + "\n主数据已更新，失败部分下轮自动重试")
           } else if let summary = app.lastSummary, summary.status == .stopped,
                     let finishedAt = app.lastSyncFinishedAt {
-            statusButton(text: "已停止 \(Self.relativeTime(finishedAt))", color: Theme.textTertiary,
+            statusButton(text: { now in "已停止 \(Self.relativeTime(finishedAt, relativeTo: now))" }, color: Theme.textTertiary,
                          help: "上次同步被手动停止，主数据已保留；补全下轮自动继续")
           } else if let lastSync {
-            statusButton(text: "已同步 \(Self.relativeTime(lastSync))", color: Theme.textTertiary, help: lastSyncSummary)
+            statusButton(text: { now in "已同步 \(Self.relativeTime(lastSync, relativeTo: now))" }, color: Theme.textTertiary, help: lastSyncSummary)
           }
           OutlineButton(title: "同步", icon: "arrow.clockwise") {
             Task { await app.syncNow() }
@@ -123,15 +125,15 @@ struct ContentView: View {
 
   /// 状态文字做成可点击按钮：点开同步详情浮层（问题 2 的深化）
   /// TimelineView 让相对时间每分钟自动演进（问题 1 的实时性），挂在前台视图上不产生后台定时器
-  private func statusButton(text: String, color: Color, help: String) -> some View {
+  private func statusButton(text: @escaping (Date) -> String, color: Color, help: String) -> some View {
     SyncStatusButton(text: text, color: color, help: help) {
       SyncDetailPopoverContent(summary: app.lastSummary, finishedAt: app.lastSyncFinishedAt)
     }
   }
 
   /// 相对时间：随当前时刻演进（TimelineView 每分钟重算）
-  static func relativeTime(_ date: Date) -> String {
-    let seconds = date.timeIntervalSinceNow.magnitude
+  static func relativeTime(_ date: Date, relativeTo now: Date = .now) -> String {
+    let seconds = date.timeIntervalSince(now).magnitude
     if seconds < 60 { return "刚刚" }
     if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前" }
     if seconds < 86400 { return "\(Int(seconds / 3600)) 小时前" }
@@ -141,19 +143,19 @@ struct ContentView: View {
 
 /// 顶栏状态：文字 + 下拉箭头，点击弹同步详情；TimelineView(.periodic) 每分钟驱动相对时间重绘
 private struct SyncStatusButton<Popover: View>: View {
-  let text: String
+  let text: (Date) -> String
   let color: Color
   let help: String
   @ViewBuilder var popover: () -> Popover
   @State private var showDetail = false
 
   var body: some View {
-    TimelineView(.periodic(from: .now, by: 60)) { _ in
+    TimelineView(.periodic(from: .now, by: 60)) { context in
       Button {
         showDetail.toggle()
       } label: {
         HStack(spacing: 4) {
-          Text(text)
+          Text(text(context.date))
             .font(.system(size: 11).monospacedDigit())
             .foregroundStyle(color)
           Image(systemName: "chevron.down")
