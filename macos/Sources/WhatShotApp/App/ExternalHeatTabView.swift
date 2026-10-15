@@ -48,9 +48,6 @@ struct ExternalHeatTabView: View {
         emptyState
         Spacer()
       } else {
-        sourceChips
-          .padding(.top, 12)
-        Rectangle().fill(Theme.hairline).frame(height: 1)
         gridSection
       }
     }
@@ -172,37 +169,40 @@ struct ExternalHeatTabView: View {
     let groups = sourceGroups
     let current = currentSource
 
-    return ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(groups, id: \.source) { group in
-          let selected = group.source == current
-          Button {
-            selectedSource = group.source
-          } label: {
-            HStack(spacing: 5) {
-              Text(ExternalSignalMeaning.label(for: group.source))
-                .font(.system(size: 11, weight: selected ? .bold : .medium).monospacedDigit())
-              Text("\(group.signals.count)")
-                .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(selected ? Theme.bg : Theme.textTertiary)
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5.5)
-            .background(
-              RoundedRectangle(cornerRadius: 12)
-                .fill(selected ? Theme.accent : Theme.elevated)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 12)
-                .stroke(selected ? Theme.accent : Theme.hairline, lineWidth: 1)
-            )
-            .foregroundStyle(selected ? Theme.bg : Theme.textSecondary)
+    return LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 8)], spacing: 8) {
+      ForEach(groups, id: \.source) { group in
+        let selected = group.source == current
+        Button {
+          selectedSource = group.source
+        } label: {
+          HStack(spacing: 5) {
+            Text(ExternalSignalMeaning.label(for: group.source))
+              .font(.system(size: 11, weight: selected ? .bold : .medium).monospacedDigit())
+              .lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Text("\(group.signals.count)")
+              .font(.system(size: 10).monospacedDigit())
+              .foregroundStyle(selected ? Theme.bg : Theme.textTertiary)
           }
-          .buttonStyle(.plain)
+          .padding(.horizontal, 11)
+          .padding(.vertical, 8)
+          .background(
+            RoundedRectangle(cornerRadius: 12)
+              .fill(selected ? Theme.accent : Theme.elevated)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 12)
+              .stroke(selected ? Theme.accent : Theme.hairline, lineWidth: 1)
+          )
+          .foregroundStyle(selected ? Theme.bg : Theme.textSecondary)
         }
+        .buttonStyle(.plain)
+        .help(group.source)
       }
-      .padding(.horizontal, 20)
     }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 12)
   }
 
   /// 选中来源的网格（同剧集/电影页画廊；行内按名次排）
@@ -212,6 +212,8 @@ struct ExternalHeatTabView: View {
       .sorted { ($0.rank ?? 999) < ($1.rank ?? 999) }
 
     return ScrollView {
+      sourceChips
+      Rectangle().fill(Theme.hairline).frame(height: 1)
       if let current, let explanation = ExternalSignalMeaning.explanation(for: current) {
         Text(explanation)
           .font(.system(size: 11))
