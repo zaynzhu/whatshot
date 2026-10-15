@@ -177,6 +177,11 @@ struct SettingsTabView: View {
               .tint(Theme.textPrimary)
             }
             diskUsageRow
+            if draft.s3MirrorEnabled && draft.posterCacheLimitMB > 0 {
+              Text("已配置 S3：保留并读取旧缓存，不再新增本机海报缓存。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+            }
           }
         }
 

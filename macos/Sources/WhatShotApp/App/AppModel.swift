@@ -47,7 +47,7 @@ public final class AppModel {
     let store = SettingsStore()
     settingsStore = store
     settings = store.load()
-    PosterLoader.shared.updateLimit(mb: settings.posterCacheLimitMB) // 缓存上限启动即生效
+    PosterLoader.shared.updateSettings(settings) // 缓存策略启动即生效
     SharedRuntime.shared.attach(model: self)
   }
 
@@ -207,7 +207,7 @@ public final class AppModel {
   func updateSettings(_ newSettings: ButaiSettings) async {
     settings = newSettings
     settingsStore.save(newSettings)
-    PosterLoader.shared.updateLimit(mb: newSettings.posterCacheLimitMB)
+    PosterLoader.shared.updateSettings(newSettings)
     await scheduleNextRun()
   }
 }

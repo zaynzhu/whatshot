@@ -3,15 +3,22 @@ import Foundation
 import WhatShotCore
 
 /// 海报加载器：NSCache 内存缓存 + 磁盘缓存（有上限、LRU 淘汰）
-/// 内存压力时 NSCache 自动逐出，磁盘上限跟随设置（保存后 updateLimit 接入）
+/// 内存压力时 NSCache 自动逐出，磁盘上限跟随设置；配置 S3 后仅读取已有磁盘缓存
 final class PosterLoader: @unchecked Sendable {
   static let shared = PosterLoader()
 
   private let memoryCache = NSCache<NSURL, NSImage>()
+  // 磁盘只由下方显式缓存管理，避免 URLSession.shared 的 HTTP 缓存另存一份海报。
+  private let session: URLSession = {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.urlCache = nil
+    return URLSession(configuration: configuration)
+  }()
   private let diskDir: URL
   /// 磁盘上限字节；0 = 关闭磁盘缓存（不读不写，海报仅内存）。锁保护：设置可运行中改
   private let limitLock = NSLock()
   private var _limitBytes: Int64
+  private var s3MirrorEnabled = false
   private var limitBytes: Int64 { limitLock.withLock { _limitBytes } }
   private let ioQueue = DispatchQueue(label: "whatshot.poster", qos: .utility)
 
@@ -26,8 +33,17 @@ final class PosterLoader: @unchecked Sendable {
 
   /// 设置保存后接入实际容量（2026-09-20 修复：此前 posterCacheLimitMB 只存展示、从未生效）。
   /// 0 = 关闭：不读不写磁盘；存量文件保留不清空，调回上限后由 LRU 逐步淘汰收敛
-  func updateLimit(mb: Int) {
-    limitLock.withLock { _limitBytes = Int64(max(0, mb)) * 1024 * 1024 }
+  func updateSettings(_ settings: ButaiSettings) {
+    limitLock.withLock {
+      _limitBytes = Int64(max(0, settings.posterCacheLimitMB)) * 1024 * 1024
+      s3MirrorEnabled = settings.s3MirrorEnabled
+    }
+  }
+
+  private var shouldWriteToDisk: Bool {
+    limitLock.withLock {
+      _limitBytes > 0 && !s3MirrorEnabled
+    }
   }
 
   func load(_ url: URL) async -> NSImage? {
@@ -53,7 +69,7 @@ final class PosterLoader: @unchecked Sendable {
       request.setValue("https://movie.douban.com/", forHTTPHeaderField: "Referer")
       request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
     }
-    guard let (data, response) = try? await URLSession.shared.data(for: request),
+    guard let (data, response) = try? await session.data(for: request),
           let http = response as? HTTPURLResponse,
           (200..<300).contains(http.statusCode),
           let image = NSImage(data: data) else {
@@ -67,8 +83,8 @@ final class PosterLoader: @unchecked Sendable {
     memoryCache.setObject(image, forKey: url as NSURL, cost: image.pixelBytes)
     let cost = image.pixelBytes
     ioQueue.async {
-      // 关闭磁盘缓存：新请求不写盘（读路径已在 limitBytes > 0 处跳过）
-      guard self.limitBytes > 0 else { return }
+      // 配置 S3 后保留旧缓存可读，但不再新增磁盘文件；关闭缓存同样不写盘
+      guard self.shouldWriteToDisk else { return }
       try? data.write(to: fileURL, options: .atomic)
       self.enforceLimit(cost: cost)
     }
