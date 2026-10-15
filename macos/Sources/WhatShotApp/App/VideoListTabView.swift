@@ -29,7 +29,7 @@ struct VideoGridTabView: View {
   @State private var rows: [VideoRepository.VideoRow] = []
   @State private var loading = false
   @State private var page = 0
-  /// 排序：剧集默认首播时间倒序（2026-09-13 定案 Q6），电影默认资源更新
+  /// 排序：剧集默认首播时间倒序，电影默认新片优先
   @State private var sort: VideoRepository.ListSort
   /// 筛选状态不跨启动持久化（定案 Q9-round1），每次进入默认全量
   @State private var filter = VideoRepository.ListFilter()
@@ -42,8 +42,7 @@ struct VideoGridTabView: View {
 
   init(kind: ButaiKind) {
     self.kind = kind
-    // 剧集页默认首播日倒序；电影页保持资源更新（定案 Q6）
-    _sort = State(initialValue: kind == .tvSeries ? .premiere : .seedUpdated)
+    _sort = State(initialValue: kind == .tvSeries ? .premiere : .newestYear)
   }
 
   // 单元格顶对齐：集数行有无导致的卡片高度差不影响海报齐平
@@ -53,6 +52,7 @@ struct VideoGridTabView: View {
     switch sort {
     case .premiere: return "按首播日期排序 · \(rows.count) 部"
     case .seedUpdated: return "按站内更新时间排序 · \(rows.count) 部"
+    case .newestYear: return "按影片年份排序 · 同年按资源更新 · \(rows.count) 部"
     }
   }
 
@@ -66,11 +66,21 @@ struct VideoGridTabView: View {
     VStack(alignment: .leading, spacing: 0) {
       PageHeader(
         eyebrow: kind == .movie ? "MOVIES · BUTAI0" : "SERIES · BUTAI0",
-        title: "最近更新",
+        title: kind == .movie ? "电影" : "最近更新",
         subtitle: sortSubtitle
       )
       .padding(.horizontal, 20)
       .padding(.top, 18)
+
+      if kind == .movie {
+        HStack(spacing: 24) {
+          ForEach([VideoRepository.ListSort.newestYear, .seedUpdated], id: \.self) { option in
+            TextTab(title: option.rawValue, selected: sort == option) { sort = option }
+          }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+      }
 
       filterRail
         .padding(.top, 14)
@@ -131,10 +141,9 @@ struct VideoGridTabView: View {
 
         searchField
 
-        SortTail(
-          kinds: kind == .tvSeries ? [.premiere, .seedUpdated] : [.seedUpdated],
-          selection: sort
-        ) { sort = $0 }
+        if kind == .tvSeries {
+          SortTail(kinds: [.premiere, .seedUpdated], selection: sort) { sort = $0 }
+        }
       }
       .padding(.horizontal, 20)
     }
@@ -260,7 +269,7 @@ struct VideoGridTabView: View {
     ScrollView {
       LazyVGrid(columns: columns, spacing: 18) {
         ForEach(rows, id: \.id) { row in
-          GalleryCard(video: row, showDefinition: true, showPremiere: sort == .premiere)
+          GalleryCard(video: row, showDefinition: true, showPremiere: sort == .premiere, showYear: kind == .movie)
             .onTapGesture { detailTarget = row }
             .onAppear {
               if row.id == rows.last?.id {

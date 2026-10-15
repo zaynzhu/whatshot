@@ -337,6 +337,7 @@ struct GalleryCard: View {
   var rank: Int? = nil
   var showDefinition = false
   var showPremiere = false
+  var showYear = false
   var movement: VideoRepository.ChartMovement? = nil
   @State private var hovering = false
 
@@ -363,6 +364,13 @@ struct GalleryCard: View {
       // 首播日：豆瓣补全的真实日期；未知不得伪造（定案 Q7），显式标注
       if showPremiere {
         PremiereDateText(video: video)
+      }
+      if showYear {
+        let year = video.years?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        Text(year.isEmpty ? "年份未知" : "年份 \(year)")
+          .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+          .foregroundStyle(Theme.textSecondary)
+          .lineLimit(1)
       }
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }

@@ -189,10 +189,11 @@ public struct VideoRepository: Sendable {
 
   // MARK: - 查询
 
-  /// 条目列表排序：默认资源更新（站点"最近更新"），剧集页可切首播日倒序
+  /// 条目列表排序：资源更新、剧集首播日倒序、电影年份倒序
   public enum ListSort: String, Sendable, CaseIterable {
     case seedUpdated = "资源更新"
     case premiere = "首播时间"
+    case newestYear = "新片优先"
   }
 
   /// 内容筛选条件（纯本地 WHERE）。nil/空 = 不筛
@@ -298,6 +299,16 @@ public struct VideoRepository: Sendable {
     case .premiere:
       // 首播日倒序；未知排尾，组内按资源更新稳定次序
       orderSQL = "CASE WHEN premiere_date IS NULL THEN 1 ELSE 0 END, premiere_date DESC, seed_updated_at DESC"
+    case .newestYear:
+      // 只把完整、合理且非未来的年份用于新旧排序；其余排尾，不把错标当作新片。
+      let currentYear = Calendar(identifier: .gregorian).component(.year, from: Date())
+      orderSQL = """
+        CASE WHEN TRIM(years) GLOB '[0-9][0-9][0-9][0-9]'
+          AND CAST(TRIM(years) AS INTEGER) BETWEEN 1800 AND ?
+          THEN CAST(TRIM(years) AS INTEGER) END DESC,
+        seed_updated_at DESC, id DESC
+        """
+      binds.append(currentYear)
     }
 
     return try await queue.run { db in

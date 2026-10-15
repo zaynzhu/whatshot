@@ -134,6 +134,61 @@ struct VideoRepositoryTests {
     #expect(movies.isEmpty)
   }
 
+  /// 新片按年份排序，未来与异常年份排尾；同年更新时间相同也保持稳定分页。
+  @Test func movieNewestYearOrdering() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    let year = Calendar(identifier: .gregorian).component(.year, from: now)
+    let fixtures: [(Int, String?, String)] = [
+      (1, "1998", "2026-10-15"),
+      (2, "\(year)", "2026-10-01"),
+      (3, "\(year)", "2026-10-02"),
+      (4, "\(year - 1)", "2026-10-14"),
+      (5, "\(year + 1)", "2026-10-16"),
+      (6, nil, "2026-10-17"),
+      (7, "未知", "2026-10-18"),
+      (8, "\(year)年", "2026-10-19"),
+      (9, "0999", "2026-10-20"),
+      (10, " \(year) ", "2026-10-02")
+    ]
+    for (id, years, updated) in fixtures {
+      var video = makeVideo(id: id)
+      video.kind = .movie
+      video.years = years
+      video.seedUpdatedAt = updated
+      _ = try await repo.upsert(video, chartScope: nil, chartRank: nil, now: now)
+    }
+    let ordered = try await repo.listVideos(kind: .movie, limit: 20, offset: 0, sort: .newestYear)
+    #expect(ordered.map(\.id) == [10, 3, 2, 4, 1, 9, 8, 7, 6, 5])
+    // 旧片资源更新仍可置顶；新片模式不会反过来改变原排序。
+    let updated = try await repo.listVideos(kind: .movie, limit: 20, offset: 0, sort: .seedUpdated)
+    #expect(updated.prefix(6).map(\.id) == [9, 8, 7, 6, 5, 1])
+    let first = try await repo.listVideos(kind: .movie, limit: 3, offset: 0, sort: .newestYear)
+    let second = try await repo.listVideos(kind: .movie, limit: 3, offset: 3, sort: .newestYear)
+    #expect((first + second).map(\.id) == Array(ordered.prefix(6)).map(\.id))
+  }
+
+  /// 年份排序与原有年份、类型、地区、搜索条件组合，且不混入剧集。
+  @Test func movieNewestYearWithFiltersAndSearch() async throws {
+    let repo = try makeRepo()
+    let now = Date()
+    let year = Calendar(identifier: .gregorian).component(.year, from: now)
+    for id in 1...6 {
+      var video = makeVideo(id: id)
+      video.kind = id == 6 ? .tvSeries : .movie
+      video.years = "\(id == 2 ? year - 1 : year)"
+      video.title = id == 3 ? "其他作品" : "目标电影"
+      video.classNames = id == 4 ? "喜剧" : "剧情"
+      video.productionArea = id == 5 ? "美国" : "日本"
+      _ = try await repo.upsert(video, chartScope: nil, chartRank: nil, now: now)
+    }
+    let rows = try await repo.listVideos(
+      kind: .movie, limit: 10, offset: 0, sort: .newestYear,
+      filter: .init(years: "\(year)", classNames: "剧情", area: "日本"), query: "目标"
+    )
+    #expect(rows.map(\.id) == [1])
+  }
+
   /// 详情候选按 seed_updated_at 新到旧，返回豆瓣 ID（详情接口参数）
   @Test func detailRefreshCandidates() async throws {
     let repo = try makeRepo()
