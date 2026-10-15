@@ -107,6 +107,7 @@ public struct VideoRepository: Sendable {
     guard sqlite3_step(upsertStmt) == SQLITE_DONE else {
       throw DatabaseError(message: "条目写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
     }
+    try normalizeMovieReleaseDate(db, videoID: videoID, timestamp: nowSeconds)
 
     let obs = """
       INSERT INTO observations (video_id, observed_at, chart_scope, chart_rank, ejs, seed_count, netdisk_count, douban_score, imdb_score)
@@ -256,7 +257,7 @@ public struct VideoRepository: Sendable {
   /// query = 本地搜索（定案七）：片名/原名/别名 LIKE，纯本地不触发外部标题搜索
   public func listVideos(kind: ButaiKind, limit: Int, offset: Int,
                          sort: ListSort = .seedUpdated, filter: ListFilter = ListFilter(),
-                         query: String? = nil) async throws -> [VideoRow] {
+                         query: String? = nil, now: Date = Date()) async throws -> [VideoRow] {
     // WHERE 片段构造
     var conditions: [String] = ["kind = ?"]
     var binds: [Any?] = [kind.rawValue]
@@ -267,7 +268,7 @@ public struct VideoRepository: Sendable {
       binds.append(pattern)
       binds.append(pattern)
     }
-    if let years = filter.years, let range = Self.yearRange(for: years) {
+    if let years = filter.years, let range = Self.yearRange(for: years, now: now) {
       conditions.append("CAST(COALESCE(years, '0') AS INTEGER) BETWEEN ? AND ?")
       binds.append(range.low)
       binds.append(range.high)
@@ -300,15 +301,22 @@ public struct VideoRepository: Sendable {
       // 首播日倒序；未知排尾，组内按资源更新稳定次序
       orderSQL = "CASE WHEN premiere_date IS NULL THEN 1 ELSE 0 END, premiere_date DESC, seed_updated_at DESC"
     case .newestYear:
-      // 只把完整、合理且非未来的年份用于新旧排序；其余排尾，不把错标当作新片。
-      let currentYear = Calendar(identifier: .gregorian).component(.year, from: Date())
+      // 有上映日按上映年份归组；无日期保留年级别精度，未来日期与异常年份排尾。
+      let components = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: now)
+      let currentYear = components.year!
+      let today = String(format: "%04d-%02d-%02d", currentYear, components.month!, components.day!)
       orderSQL = """
-        CASE WHEN TRIM(years) GLOB '[0-9][0-9][0-9][0-9]'
+        CASE WHEN premiere_date IS NOT NULL THEN
+          CASE WHEN premiere_date <= ? THEN CAST(SUBSTR(premiere_date, 1, 4) AS INTEGER) END
+          WHEN TRIM(years) GLOB '[0-9][0-9][0-9][0-9]'
           AND CAST(TRIM(years) AS INTEGER) BETWEEN 1800 AND ?
           THEN CAST(TRIM(years) AS INTEGER) END DESC,
+        CASE WHEN premiere_date <= ? THEN premiere_date END DESC,
         seed_updated_at DESC, id DESC
         """
+      binds.append(today)
       binds.append(currentYear)
+      binds.append(today)
     }
 
     return try await queue.run { db in
@@ -384,7 +392,7 @@ public struct VideoRepository: Sendable {
     public var seedUpdatedAt: String?
     public var sourceUpdatedAt: String?
     public var premiereDate: String?
-    /// 首播日来源：douban / tmdb，错配可按 source 反查回滚
+    /// 日期来源：剧集 douban / tmdb；电影本地解析 butai0，错配可按 source 反查
     public var premiereSource: String?
     public var lastSyncedAt: Date
   }
@@ -984,7 +992,10 @@ public struct VideoRepository: Sendable {
     SQLiteDatabase.bind(stmt, 13, video.classNames)
     SQLiteDatabase.bind(stmt, 14, video.productionArea)
     SQLiteDatabase.bind(stmt, 15, video.years)
-    SQLiteDatabase.bind(stmt, 16, video.release)
+    let release = video.release.flatMap { raw in
+      video.kind == .movie && raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : raw
+    }
+    SQLiteDatabase.bind(stmt, 16, release)
     SQLiteDatabase.bind(stmt, 17, video.director)
     SQLiteDatabase.bind(stmt, 18, video.performer)
     SQLiteDatabase.bind(stmt, 19, video.abstract)

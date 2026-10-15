@@ -367,10 +367,13 @@ struct GalleryCard: View {
       }
       if showYear {
         let year = video.years?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        Text(year.isEmpty ? "年份未知" : "年份 \(year)")
+        Text(video.premiereDate.map { "上映 \($0)" } ?? (year.isEmpty ? "年份未知" : "年份 \(year)"))
           .font(.system(size: 10.5, weight: .medium).monospacedDigit())
           .foregroundStyle(Theme.textSecondary)
           .lineLimit(1)
+          .help(video.premiereSource == "butai0"
+            ? "来源：站方（butai0），已排除明确标注的特殊场次\n原始上映信息：\(video.releaseInfo ?? "未知")"
+            : "来源：\(video.premiereDate == nil ? "影片年份" : video.premiereSource ?? "未知")\n原始上映信息：\(video.releaseInfo ?? "未知")")
       }
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }

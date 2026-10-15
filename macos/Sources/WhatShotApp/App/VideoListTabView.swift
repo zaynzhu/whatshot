@@ -52,7 +52,7 @@ struct VideoGridTabView: View {
     switch sort {
     case .premiere: return "按首播日期排序 · \(rows.count) 部"
     case .seedUpdated: return "按站内更新时间排序 · \(rows.count) 部"
-    case .newestYear: return "按影片年份排序 · 同年按资源更新 · \(rows.count) 部"
+    case .newestYear: return "按上映日期排序 · 缺日期按年份 · \(rows.count) 部"
     }
   }
 

@@ -57,8 +57,10 @@ public final class AppModel {
     do {
       let path = SharedRuntime.databasePath()
       let newQueue = try await DatabaseQueue(path: path)
+      let newRepo = VideoRepository(queue: newQueue)
+      try await newRepo.normalizeMovieReleaseDates()
       queue = newQueue
-      repo = VideoRepository(queue: newQueue)
+      repo = newRepo
       try await repo?.recoverInterruptedRuns(at: Date())
       // 启动后台同步：距上次同步超过间隔才跑
       await maybeSync(force: false)

@@ -30,7 +30,8 @@ struct DetailSheet: View {
             .foregroundStyle(Theme.textPrimary)
           metaLine
           if let premiere = video.premiereDate {
-            Text("首播 \(premiere)")
+            Text("\(video.kind == .movie ? "上映" : "首播") \(premiere)")
+              .help(video.premiereSource == "butai0" ? "来源：站方（butai0），已排除明确标注的特殊场次" : "来源：\(video.premiereSource ?? "未知")")
               .font(.system(size: 11, weight: .medium))
               .foregroundStyle(Theme.accent)
           }
