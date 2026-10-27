@@ -17,6 +17,29 @@ struct DetailSheet: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 18) {
+      // 短内容按原高度展示，超过可用高度时改为纵向滚动
+      ViewThatFits(in: .vertical) {
+        detailContent.fixedSize(horizontal: false, vertical: true)
+        ScrollView(.vertical) {
+          detailContent
+        }
+      }
+
+      closeButton
+    }
+    .padding(20)
+    .frame(width: 620)
+    .frame(maxHeight: 600)
+    .background(Theme.elevated)
+    .task {
+      await loadObservations()
+      watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
+      await loadExternalSignals()
+    }
+  }
+
+  private var detailContent: some View {
+    HStack(alignment: .top, spacing: 18) {
       // 左：大海报（与画廊同源组件，固定宽）
       PosterImage(url: video.posterURL)
         .frame(width: 180)
@@ -118,29 +141,23 @@ struct DetailSheet: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
 
-      // 右上角关闭：sheet 模态在部分窗口层级下 Esc 会失效，显式按钮保证可关
-      Button {
-        dismiss()
-      } label: {
-        Image(systemName: "xmark")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(Theme.textTertiary)
-          .frame(width: 24, height: 24)
-          .background(Theme.bg, in: Circle())
-          .overlay(Circle().stroke(Theme.hairline, lineWidth: 1))
-      }
-      .buttonStyle(.plain)
-      .keyboardShortcut(.escape, modifiers: [])
+  // 关闭按钮独立于滚动内容，滚到末尾仍可关闭；同时保留 Esc 快捷键
+  private var closeButton: some View {
+    Button {
+      dismiss()
+    } label: {
+      Image(systemName: "xmark")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(Theme.textTertiary)
+        .frame(width: 24, height: 24)
+        .background(Theme.bg, in: Circle())
+        .overlay(Circle().stroke(Theme.hairline, lineWidth: 1))
     }
-    .padding(20)
-    .frame(width: 620)
-    .background(Theme.elevated)
-    .task {
-      await loadObservations()
-      watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
-      await loadExternalSignals()
-    }
+    .buttonStyle(.plain)
+    .keyboardShortcut(.escape, modifiers: [])
   }
 
   /// 外部信号（本地快照查询，零网络请求）
