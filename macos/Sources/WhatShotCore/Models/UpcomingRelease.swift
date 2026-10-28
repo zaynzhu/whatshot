@@ -1,13 +1,15 @@
 import Foundation
 
 public enum UpcomingSource: String, CaseIterable, Codable, Sendable, Identifiable {
-  case youku, iqiyi, tencent
+  case youku, iqiyi, tencent, whenToStream
   public var id: String { rawValue }
+  public var region: String { self == .whenToStream ? "US" : "CN" }
   public var title: String {
     switch self {
     case .youku: return "优酷"
     case .iqiyi: return "爱奇艺"
     case .tencent: return "腾讯视频"
+    case .whenToStream: return "When to Stream"
     }
   }
 }
@@ -64,14 +66,16 @@ public struct UpcomingError: LocalizedError, Sendable {
 }
 
 public enum UpcomingDate {
-  public static var calendar: Calendar {
+  public static var calendar: Calendar { calendar(region: "CN") }
+
+  public static func calendar(region: String) -> Calendar {
     var value = Calendar(identifier: .gregorian)
-    value.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    value.timeZone = TimeZone(identifier: region == "US" ? "America/New_York" : "Asia/Shanghai")!
     return value
   }
 
-  public static func day(_ value: Date) -> String {
-    let parts = calendar.dateComponents([.year, .month, .day], from: value)
+  public static func day(_ value: Date, region: String = "CN") -> String {
+    let parts = calendar(region: region).dateComponents([.year, .month, .day], from: value)
     return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
   }
 

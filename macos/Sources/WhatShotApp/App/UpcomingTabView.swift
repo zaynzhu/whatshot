@@ -5,6 +5,7 @@ import WhatShotCore
 struct UpcomingTabView: View {
   @Environment(AppModel.self) private var app
   @State private var source = "all"
+  @State private var region = "CN"
   @State private var kind = "all"
   @State private var window: UpcomingWindow = .future
   @State private var rows: [UpcomingWork] = []
@@ -17,10 +18,11 @@ struct UpcomingTabView: View {
   @State private var showSources = false
 
   private var enabled: [UpcomingSource] { app.settings.enabledUpcomingSources }
+  private var regionalSources: [UpcomingSource] { enabled.filter { $0.region == region } }
   private var selectedSources: [UpcomingSource] {
-    enabled.filter { source == "all" || $0.rawValue == source }
+    regionalSources.filter { source == "all" || $0.rawValue == source }
   }
-  private var filterKey: String { "\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
+  private var filterKey: String { "\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
   private var queryKey: String { "\(filterKey)|\(app.upcomingRevision)|\(app.queue == nil)" }
   private var groups: [String] {
     var keys = Set(rows.map { $0.releaseDate ?? "待定档" }).sorted()
@@ -30,8 +32,9 @@ struct UpcomingTabView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      PageHeader(eyebrow: "平台排期 · 中国大陆", title: "即将上线",
-                 subtitle: "按北京时间展示平台公布排期；未知时刻不补零点，排期不保证已可播放。") {
+      PageHeader(eyebrow: region == "CN" ? "平台排期 · 中国大陆" : "数字发行报道 · 美国", title: "即将上线",
+                 subtitle: region == "CN" ? "按北京时间展示平台公布排期；未知时刻不补零点，排期不保证已可播放。"
+                   : "美区数字付费报道，官宣状态未核实；不含预购、订阅与实体碟。保留美国日期，今日按美东日期划分。") {
         HStack(spacing: 8) {
           OutlineButton(title: "来源", icon: "slider.horizontal.3") { showSources.toggle() }
             .popover(isPresented: $showSources) { sourceSettings }
@@ -46,21 +49,27 @@ struct UpcomingTabView: View {
       .padding(20)
 
       HStack(spacing: 12) {
+        Picker("地区", selection: $region) {
+          Text("中国大陆").tag("CN")
+          Text("美国 · 发行报道").tag("US")
+        }.labelsHidden().frame(width: 160)
         Picker("来源", selection: $source) {
-          Text("全部平台").tag("all")
-          ForEach(enabled) { Text($0.title).tag($0.rawValue) }
+          Text("全部来源").tag("all")
+          ForEach(regionalSources) { Text($0.title).tag($0.rawValue) }
         }.labelsHidden().frame(width: 120)
         Picker("类型", selection: $kind) {
           Text("全部类型").tag("all")
           Text("电影").tag("movie")
           Text("剧集").tag("series")
         }.labelsHidden().frame(width: 100)
-        Picker("排期范围", selection: $window) {
-          ForEach(UpcomingWindow.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-        }.labelsHidden().pickerStyle(.segmented)
+        Spacer(minLength: 0)
       }
       .padding(.horizontal, 20)
       .padding(.bottom, 12)
+      Picker("排期范围", selection: $window) {
+        ForEach(UpcomingWindow.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+      }.labelsHidden().pickerStyle(.segmented)
+        .frame(maxWidth: 360).padding(.horizontal, 20).padding(.bottom, 12)
 
       if app.syncingUpcoming {
         HStack(spacing: 8) {
@@ -94,7 +103,7 @@ struct UpcomingTabView: View {
               VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                   Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                  Text(day == "待定档" ? day : day + " · 北京时间")
+                  Text(day == "待定档" ? day : day + (region == "US" ? " · 美国日期" : " · 北京时间"))
                     .font(.system(size: 15, weight: .bold).monospacedDigit())
                   Rectangle().fill(Theme.hairline).frame(height: 1)
                 }
@@ -121,6 +130,7 @@ struct UpcomingTabView: View {
     }
     .background(Theme.bg)
     .task(id: queryKey) { await reload() }
+    .onChange(of: region) { _, _ in source = "all"; kind = "all" }
     .onChange(of: enabled) { _, value in
       if source != "all", !value.contains(where: { $0.rawValue == source }) { source = "all" }
     }
@@ -157,19 +167,19 @@ struct UpcomingTabView: View {
       }
       Text("自动刷新沿用设置中的同步间隔。关闭来源后隐藏其缓存并停止当前刷新；开启后可手动刷新。")
       Divider()
-      Text("当前支持优酷、爱奇艺、腾讯。海外数字发行尚未接入，将区分地区、购买、租赁与订阅。")
+      Text("国内：优酷、爱奇艺、腾讯。美国：When to Stream 数字付费报道，官宣状态未核实，不代表 Apple TV 等商店官方排期；未明确购买或租赁时不推测。")
     }
     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
     .padding(20).frame(width: 320)
   }
 
   private var emptyTitle: String {
-    if enabled.isEmpty { return "待播来源已全部关闭" }
+    if selectedSources.isEmpty { return "此地区的待播来源未开启" }
     if states.filter({ selectedSources.contains($0.source) }).allSatisfy({ $0.lastSuccessAt == nil }) { return "尚无待播快照" }
     return window == .undated ? "此筛选下没有待定档作品" : "此筛选下暂无已公布日期的作品"
   }
   private var emptyDetail: String {
-    if enabled.isEmpty { return "点击「来源」开启平台" }
+    if selectedSources.isEmpty { return "点击「来源」开启此地区的数据源，再刷新排期。" }
     if window == .future { return "可以刷新排期，或切换「待定档」查看尚未公布日期的片单。" }
     if window == .recent { return "这里只展示过去 14 天的排期，不代表已经可以播放。" }
     return "公开片单随平台公告更新，未公布的日期与时刻不会推测补齐。"
@@ -185,7 +195,7 @@ struct UpcomingTabView: View {
     do {
       let store = UpcomingStore(queue: queue)
       let states = try await store.states()
-      let page = try await store.works(sources: selectedSources, kind: kind == "all" ? nil : kind, window: window)
+      let page = try await store.works(sources: selectedSources, region: region, kind: kind == "all" ? nil : kind, window: window)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       self.states = states
       rows = page
@@ -204,7 +214,7 @@ struct UpcomingTabView: View {
     loading = true
     do {
       let page = try await UpcomingStore(queue: queue).works(sources: selectedSources,
-        kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
+        region: region, kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       rows += page
       hasMore = page.count == 60
@@ -237,6 +247,10 @@ private struct UpcomingCard: View {
               Text(release.releaseDate.map { $0 + " · " + release.timeText } ?? "待定档")
                 .monospacedDigit()
                 .foregroundStyle(release.releaseTime == nil ? Theme.textSecondary : Theme.accent)
+              if release.source == .whenToStream {
+                Text("美国 · 数字付费 · 报道排期").foregroundStyle(Theme.textTertiary)
+                Text("官宣状态未核实").foregroundStyle(Theme.textTertiary)
+              }
               if release.sourceReportsAvailable {
                 Text("来源标记已上线").foregroundStyle(Theme.accent)
               }

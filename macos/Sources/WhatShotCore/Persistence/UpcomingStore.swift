@@ -7,7 +7,7 @@ public struct UpcomingStore: Sendable {
 
   /// 调用方只能提交完整来源批次。身份／编码／SQL 任一步失败都不改变旧快照。
   public func replace(_ rows: [UpcomingRelease], source: UpcomingSource, at now: Date) async throws {
-    guard !rows.isEmpty, Set(rows.map(\.id)).count == rows.count,
+    guard (!rows.isEmpty || source == .whenToStream), Set(rows.map(\.id)).count == rows.count,
           rows.allSatisfy({ $0.source == source && !$0.sourceID.isEmpty && !$0.title.isEmpty
             && ["movie", "series"].contains($0.kind)
             && ($0.releaseDate == nil || MovieReleaseDate.isValid($0.releaseDate!))
@@ -97,14 +97,15 @@ public struct UpcomingStore: Sendable {
     }
   }
 
-  public func releases(sources: [UpcomingSource], kind: String? = nil, window: UpcomingWindow = .future,
+  public func releases(sources: [UpcomingSource], region: String? = nil, kind: String? = nil, window: UpcomingWindow = .future,
                        now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingRelease] {
     guard !sources.isEmpty else { return [] }
-    let today = UpcomingDate.day(now)
-    let past = UpcomingDate.day(UpcomingDate.calendar.date(byAdding: .day, value: -14, to: now)!)
+    let today = UpcomingDate.day(now, region: region ?? "CN")
+    let past = UpcomingDate.day(UpcomingDate.calendar(region: region ?? "CN").date(byAdding: .day, value: -14, to: now)!, region: region ?? "CN")
     return try await queue.run { db in
       var conditions = ["active=1", "source IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
       var values = sources.map(\.rawValue)
+      if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
       if let kind { conditions.append("kind=?"); values.append(kind) }
       switch window {
       case .future: conditions.append("release_date>=?"); values.append(today)
@@ -139,14 +140,15 @@ public struct UpcomingStore: Sendable {
   }
 
   /// 先聚合作品再分页；避免同一作品跨页、跨日期或待定档重复占卡位。
-  public func works(sources: [UpcomingSource], kind: String? = nil, window: UpcomingWindow = .future,
+  public func works(sources: [UpcomingSource], region: String? = nil, kind: String? = nil, window: UpcomingWindow = .future,
                     now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
     guard !sources.isEmpty else { return [] }
-    let today = UpcomingDate.day(now)
-    let past = UpcomingDate.day(UpcomingDate.calendar.date(byAdding: .day, value: -14, to: now)!)
+    let today = UpcomingDate.day(now, region: region ?? "CN")
+    let past = UpcomingDate.day(UpcomingDate.calendar(region: region ?? "CN").date(byAdding: .day, value: -14, to: now)!, region: region ?? "CN")
     return try await queue.run { db in
       var conditions = ["active=1", "source IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
       var values = sources.map(\.rawValue)
+      if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
       if let kind { conditions.append("kind=?"); values.append(kind) }
       // 完整标题只折叠首尾空格和大小写，不删除季数、年份、副标题或版本标记。
       // 同平台多个不同 ID 同名说明存在歧义，整组拆开，避免误并重拍作品。

@@ -24,6 +24,7 @@ public struct UpcomingClient: Sendable {
     case .youku: return try await fetchYouku()
     case .iqiyi: return try await fetchIqiyi()
     case .tencent: return try await fetchTencent()
+    case .whenToStream: return try await fetchOverseasDigital()
     }
   }
 
@@ -352,6 +353,62 @@ public struct UpcomingClient: Sendable {
     return UpcomingRelease(source: .tencent, sourceID: id, kind: kind, title: title,
       posterURL: posterURL(card["new_pic_vt"], source: .tencent), sourceURL: "https://v.qq.com/x/cover/\(id).html",
       releaseDate: nil, releaseTime: nil, rawSchedule: "即将上线 · 日期未公布", observedAt: observedAt)
+  }
+
+  // MARK: - 美区数字发行报道
+
+  private func fetchOverseasDigital() async throws -> [UpcomingRelease] {
+    let now = Date()
+    let months = OverseasDigitalParser.months(at: now)
+    let pages = try await fetchOverseasPages(slugs: months.map(\.slug))
+    guard pages.contains(where: { $0["slug"] as? String == months[1].slug }) else {
+      throw UpcomingError("美区当月数字发行日历缺失，已保留上次数据")
+    }
+    var candidates: [String: OverseasDigitalParser.Candidate] = [:]
+    let lower = OverseasDigitalParser.lowerBound(at: now)
+    for page in pages {
+      guard let month = months.first(where: { $0.slug == page["slug"] as? String }) else {
+        throw UpcomingError("美区日历返回了未请求的月份")
+      }
+      for item in try OverseasDigitalParser.candidates(page, month: month, lowerBound: lower) {
+        candidates[item.slug] = item
+      }
+    }
+    guard candidates.count <= 150 else { throw UpcomingError("美区候选超过本轮上限，未替换旧快照") }
+    let ordered = candidates.values.sorted { $0.slug < $1.slug }
+    var result: [UpcomingRelease] = []
+    for start in stride(from: 0, to: ordered.count, by: 25) {
+      let batch = Array(ordered[start..<min(start + 25, ordered.count)])
+      let details = try await fetchOverseasPages(slugs: batch.map(\.slug))
+      guard details.count == batch.count else { throw UpcomingError("美区影片详情不完整，已保留上次数据") }
+      var seen = Set<String>()
+      for detail in details {
+        guard let slug = detail["slug"] as? String, let item = candidates[slug],
+              batch.contains(where: { $0.slug == slug }), seen.insert(slug).inserted else {
+          throw UpcomingError("美区影片详情身份不一致")
+        }
+        let row = try OverseasDigitalParser.release(detail, candidate: item, observedAt: now)
+        // 详情可能已经改期；只保留本次声明的窗口，TBA 保留待定档身份。
+        if row.releaseDate == nil || (row.releaseDate! >= lower && row.releaseDate! <= months[2].lastDay) {
+          result.append(row)
+        }
+      }
+    }
+    return result
+  }
+
+  private func fetchOverseasPages(slugs: [String]) async throws -> [[String: Any]] {
+    var url = URLComponents(string: "https://whentostream.com/wp-json/wp/v2/pages")!
+    url.queryItems = [URLQueryItem(name: "slug", value: slugs.joined(separator: ",")),
+      URLQueryItem(name: "per_page", value: "100"),
+      URLQueryItem(name: "_fields", value: "id,slug,link,title,content")]
+    let (data, http) = try await request(url.url!, source: .whenToStream)
+    guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+          let total = Int(http.value(forHTTPHeaderField: "X-WP-Total") ?? ""), total == rows.count,
+          let pages = Int(http.value(forHTTPHeaderField: "X-WP-TotalPages") ?? ""), (0...1).contains(pages) else {
+      throw UpcomingError("美区发行响应不完整，已保留上次数据")
+    }
+    return rows
   }
 
   // MARK: - 边界辅助

@@ -188,4 +188,49 @@ struct UpcomingNetworkTests {
       #expect(row?.releaseTime == time)
     }
   }
+
+  @Test func overseasRequiresCompleteDetailsAndAcceptsOnlyVerifiedEmptyCalendar() async throws {
+    let month = OverseasDigitalParser.months(at: .now)[1]
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = UpcomingDate.calendar(region: "US").timeZone
+    formatter.dateFormat = "MMMM d, yyyy"
+    let date = formatter.string(from: .now)
+    let calendar = OverseasDigitalTests.calendar(month, date: date)
+    let details = OverseasDigitalTests.page(html: "<p>PVOD Release Date: \(date)</p>")
+    let calendarsJSON = String(decoding: try JSONSerialization.data(withJSONObject: [calendar]), as: UTF8.self)
+    let detailsJSON = String(decoding: try JSONSerialization.data(withJSONObject: [details]), as: UTF8.self)
+    let headers = ["X-WP-Total": "1", "X-WP-TotalPages": "1"]
+    let success = client()
+    Stub.respond = { request, count in
+      #expect(request.url?.host == "whentostream.com")
+      #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+      let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+      let slugs = query.first { $0.name == "slug" }!.value!
+      #expect(count == 1 ? slugs.contains(month.slug) : slugs == "primetime-2026")
+      return (200, headers, count == 1 ? calendarsJSON : detailsJSON)
+    }
+    #expect(try await success.fetch(.whenToStream).count == 1)
+    #expect(Stub.requests.count == 2)
+
+    for failure in ["missingDetail", "partialCalendar", "missingCurrent", "network"] {
+      let client = client()
+      Stub.respond = { _, count in
+        if failure == "partialCalendar" { return (200, ["X-WP-Total": "2", "X-WP-TotalPages": "2"], calendarsJSON) }
+        if failure == "missingCurrent" || count == 2 && failure == "missingDetail" {
+          return (200, ["X-WP-Total": "0", "X-WP-TotalPages": "0"], "[]")
+        }
+        if count == 2 && failure == "network" { return (503, [:], "") }
+        return (200, headers, calendarsJSON)
+      }
+      await #expect(throws: UpcomingError.self) { try await client.fetch(.whenToStream) }
+      #expect(Stub.requests.count <= 2)
+    }
+    let empty = client()
+    let emptyCalendar = OverseasDigitalTests.calendar(month, date: date, empty: true)
+    let emptyJSON = String(decoding: try JSONSerialization.data(withJSONObject: [emptyCalendar]), as: UTF8.self)
+    Stub.respond = { _, _ in (200, headers, emptyJSON) }
+    #expect(try await empty.fetch(.whenToStream).isEmpty)
+    #expect(Stub.requests.count == 1)
+  }
 }
