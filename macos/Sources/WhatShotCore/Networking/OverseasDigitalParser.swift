@@ -99,10 +99,22 @@ enum OverseasDigitalParser {
     guard releaseDate != nil || ["tba", "tbd", "to be announced"].contains(value.lowercased()) else {
       throw UpcomingError("美区数字付费日期格式变化")
     }
-    return UpcomingRelease(source: .whenToStream, sourceID: id.stringValue, kind: "movie",
+    var row = UpcomingRelease(source: .whenToStream, sourceID: id.stringValue, kind: "movie",
       title: plain(renderedTitle), posterURL: candidate.poster, sourceURL: link,
       region: "US", timeZone: "", releaseType: "digital", releaseDate: releaseDate, releaseTime: nil,
       rawSchedule: "媒体报道 · 官宣状态未核实 · \(raw) · 日历原列 \(candidate.date)", observedAt: observedAt)
+    let title = plain(renderedTitle)
+    if let yearSuffix = matches(#"\([12][0-9]{3}\)$"#, title).first {
+      row.productionYear = Int(yearSuffix.dropFirst().dropLast())
+      row.originalTitle = String(title.dropLast(yearSuffix.count)).trimmingCharacters(in: .whitespaces)
+    }
+    let directorLines = matches(#"(?is)<p\b[^>]*>.*?</p>"#, withoutScripts(html)).map(plain).filter { $0.range(of: #"^Directors?\s*:"#, options: .regularExpression) != nil }
+    if directorLines.count == 1 {
+      let names = directorLines[0].replacingOccurrences(of: #"^Directors?\s*:\s*"#, with: "", options: .regularExpression)
+      row.directors = names.components(separatedBy: " and ").flatMap { $0.components(separatedBy: ",") }
+        .flatMap { $0.components(separatedBy: " & ") }.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+    return row
   }
 
   private static func date(_ value: String) -> String? {

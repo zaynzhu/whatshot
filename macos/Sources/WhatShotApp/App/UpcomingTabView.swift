@@ -16,6 +16,8 @@ struct UpcomingTabView: View {
   @State private var queryGeneration = UUID()
   @State private var loadedFilter: String?
   @State private var showSources = false
+  @State private var connections: [String: WorkConnection] = [:]
+  @State private var detailTarget: UpcomingWork?
 
   private var enabled: [UpcomingSource] { app.settings.enabledUpcomingSources }
   private var regionalSources: [UpcomingSource] { enabled.filter { region == "all" || $0.region == region } }
@@ -24,7 +26,7 @@ struct UpcomingTabView: View {
     regionalSources.filter { source == "all" || $0.rawValue == source }
   }
   private var filterKey: String { "\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
-  private var queryKey: String { "\(filterKey)|\(app.upcomingRevision)|\(app.queue == nil)" }
+  private var queryKey: String { "\(filterKey)|\(app.upcomingRevision)|\(app.externalRevision)|\(app.externalEnabled)|\(app.queue == nil)" }
   private var eyebrow: String {
     switch region {
     case "CN": "平台排期 · 中国大陆"
@@ -61,6 +63,9 @@ struct UpcomingTabView: View {
           if app.syncingUpcoming {
             OutlineButton(title: "停止", icon: "xmark") { app.stopUpcoming() }
           } else {
+            OutlineButton(title: "补全片名", icon: "character.bubble") { Task { await app.localizeUpcomingTitles() } }
+              .disabled(!enabled.contains(.whenToStream) || (app.settings.tmdbApiKey ?? "").isEmpty || app.queue == nil)
+              .help("核验下一批美区电影的中文片名，最多 10 部；需在设置中配置 TMDB。首次先刷新排期。")
             OutlineButton(title: "刷新排期", icon: "arrow.clockwise") { Task { await app.syncUpcoming() } }
               .disabled(enabled.isEmpty || app.queue == nil)
           }
@@ -130,7 +135,8 @@ struct UpcomingTabView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16, alignment: .top)], spacing: 18) {
                   ForEach(rows.filter { ($0.releaseDate ?? "待定档") == day }) { row in
-                    UpcomingCard(row: row)
+                    let connection = WorkConnection.combined(row.releases.compactMap { connections[$0.id] })
+                    UpcomingCard(row: row, connection: connection) { detailTarget = row }
                   }
                 }
               }
@@ -150,6 +156,9 @@ struct UpcomingTabView: View {
       }
     }
     .background(Theme.bg)
+    .sheet(item: $detailTarget) { row in
+      UpcomingDetailSheet(row: row, connection: WorkConnection.combined(row.releases.compactMap { connections[$0.id] }))
+    }
     .task(id: queryKey) { await reload() }
     .onChange(of: region) { _, _ in source = "all"; kind = "all" }
     .onChange(of: enabled) { _, value in
@@ -158,22 +167,17 @@ struct UpcomingTabView: View {
   }
 
   private var sourceStatus: some View {
-    VStack(alignment: .leading, spacing: 5) {
-      ForEach(selectedSources) { source in
-        let state = states.first { $0.source == source }
-        HStack(alignment: .top, spacing: 6) {
-          Text(source.title).foregroundStyle(Theme.textSecondary)
-          if let state {
-            Text(state.lastSuccessAt.map { "\(state.count) 部 · 更新于 \(ContentView.relativeTime($0))" } ?? "尚未成功读取")
-            if let error = state.error {
-              Text("· \(error)" + (state.lastSuccessAt == nil ? "" : " · 显示旧快照"))
-                .foregroundStyle(Theme.accent)
-            }
-          } else { Text("尚未同步") }
-        }
-        .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+    HStack(spacing: 8) {
+      Image(systemName: "checkmark.circle").foregroundStyle(Theme.accent)
+      Text("\(selectedSources.count) 个来源 · 已加载 \(rows.count) 部作品")
+      if states.contains(where: { selectedSources.contains($0.source) && $0.error != nil }) {
+        Text("部分来源使用旧快照").foregroundStyle(Theme.accent)
       }
-    }.padding(.horizontal, 20).padding(.bottom, 12)
+      Spacer()
+      Text("点击海报查看排期与榜单").foregroundStyle(Theme.textTertiary)
+    }
+    .font(.system(size: 10.5)).foregroundStyle(Theme.textSecondary)
+    .padding(.horizontal, 20).padding(.bottom, 12)
   }
 
   private var sourceSettings: some View {
@@ -185,6 +189,12 @@ struct UpcomingTabView: View {
           settings.upcomingSources = UpcomingSource.allCases.filter { $0 == source ? value : enabled.contains($0) }
           Task { await app.updateSettings(settings) }
         }))
+      }
+      ForEach(states.filter { enabled.contains($0.source) }, id: \.source) { state in
+        VStack(alignment: .leading, spacing: 3) {
+          Text("\(state.source.title) · \(state.count) 条 · " + (state.lastSuccessAt.map { ContentView.relativeTime($0) } ?? "尚未同步"))
+          if let error = state.error { Text(error).foregroundStyle(Theme.accent) }
+        }.font(.system(size: 10))
       }
       Text("自动刷新沿用设置中的同步间隔。关闭来源后隐藏其缓存并停止当前刷新；开启后可手动刷新。")
       Divider()
@@ -217,7 +227,9 @@ struct UpcomingTabView: View {
       let store = UpcomingStore(queue: queue)
       let states = try await store.states()
       let page = try await store.works(sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, window: window)
+      let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
       guard !Task.isCancelled, generation == queryGeneration else { return }
+      connections = linked
       self.states = states
       rows = page
       hasMore = page.count == 60
@@ -236,7 +248,9 @@ struct UpcomingTabView: View {
     do {
       let page = try await UpcomingStore(queue: queue).works(sources: selectedSources,
         region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
+      let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
       guard !Task.isCancelled, generation == queryGeneration else { return }
+      connections.merge(linked) { _, new in new }
       rows += page
       hasMore = page.count == 60
       readError = nil
@@ -249,11 +263,23 @@ struct UpcomingTabView: View {
 
 private struct UpcomingCard: View {
   let row: UpcomingWork
+  let connection: WorkConnection
+  let open: () -> Void
+  @Environment(AppModel.self) private var app
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
-      PosterImage(url: row.posterURL).id(row.posterURL)
-      Text(row.title).font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(Theme.textPrimary).lineLimit(2)
+      Button(action: open) {
+        SignalPoster(url: row.posterURL, signals: app.signals(for: connection)).id(row.posterURL)
+      }.buttonStyle(.plain).help("查看作品排期与外部榜单")
+        .accessibilityLabel("查看\(connection.chineseTitle ?? row.title)详情")
+      Button(action: open) {
+        Text(connection.chineseTitle ?? row.title).font(.system(size: 12.5, weight: .semibold))
+          .foregroundStyle(Theme.textPrimary).lineLimit(2)
+      }.buttonStyle(.plain)
+      if let title = connection.chineseTitle, title != row.title {
+        Text(row.title).font(.system(size: 10)).foregroundStyle(Theme.textTertiary).lineLimit(2)
+      }
+      ExternalSignalBadge(signals: app.signals(for: connection))
       Text(row.kind == "movie" ? "电影" : "剧集")
         .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
       if row.releases.first?.region == "CN" {

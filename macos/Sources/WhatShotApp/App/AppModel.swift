@@ -30,6 +30,42 @@ public final class AppModel {
   public private(set) var upcomingPhase: String?
   public private(set) var upcomingError: String?
   public private(set) var upcomingRevision = 0
+  var externalRows: [ExternalHeatStore.DisplayRow] = []
+  var externalRevision = 0
+  struct ExternalFocus: Equatable {
+    let token = UUID()
+    let source: String
+    let rowID: String
+  }
+  var externalFocus: ExternalFocus?
+
+  var externalEnabled: Bool {
+    settings.whatsnewEnabled == true && !(settings.whatsnewBaseURL ?? "").isEmpty
+  }
+
+  func signals(forVideo id: Int) -> [ExternalHeatStore.DisplayRow] {
+    externalEnabled ? externalRows.filter { $0.video?.id == id } : []
+  }
+
+  func signals(for connection: WorkConnection) -> [ExternalHeatStore.DisplayRow] {
+    guard externalEnabled else { return [] }
+    return externalRows.filter {
+      (connection.videoID != nil && $0.video?.id == connection.videoID) ||
+      (connection.mediaID != nil && $0.mediaID == connection.mediaID)
+    }
+  }
+
+  func openExternal(_ signal: ExternalHeatStore.DisplayRow) {
+    externalFocus = ExternalFocus(source: signal.source, rowID: signal.id)
+  }
+
+  func reloadExternalRows() async {
+    guard externalEnabled, let queue else { externalRows = []; externalRevision += 1; return }
+    if let rows = try? await ExternalHeatStore(queue: queue).displayRows() {
+      externalRows = rows
+      externalRevision += 1
+    }
+  }
   private var upcomingTask: Task<Void, Error>?
   private let upcomingClient = UpcomingClient()
 
@@ -67,6 +103,7 @@ public final class AppModel {
       try await newRepo.normalizeMovieReleaseDates()
       queue = newQueue
       repo = newRepo
+      await reloadExternalRows()
       try await repo?.recoverInterruptedRuns(at: Date())
       // 启动后台同步：距上次同步超过间隔才跑
       async let main: Void = maybeSync(force: false)
@@ -94,6 +131,21 @@ public final class AppModel {
 
   func stopUpcoming() { upcomingTask?.cancel() }
 
+  /// 手动继续核验下一批片名，不重复拉四个平台的排期。
+  func localizeUpcomingTitles() async {
+    guard !syncingUpcoming, let queue, settings.enabledUpcomingSources.contains(.whenToStream),
+          let key = settings.tmdbApiKey, !key.isEmpty else { return }
+    syncingUpcoming = true
+    upcomingError = nil
+    let localizer = UpcomingLocalizationSync(queue: queue, client: TmdbClient(apiKey: key))
+    let task = Task { try await localizer.run { [weak self] phase in await self?.setUpcomingPhase(phase) } }
+    upcomingTask = task
+    defer { syncingUpcoming = false; upcomingTask = nil; upcomingPhase = nil; upcomingRevision += 1 }
+    do { try await task.value }
+    catch is CancellationError { upcomingError = "片名核验已停止，已完成的结果保留" }
+    catch { upcomingError = "片名核验暂未完成，可稍后重试；已有片名保留" }
+  }
+
   func syncUpcoming(force: Bool = true) async {
     guard !syncingUpcoming, let queue, !settings.enabledUpcomingSources.isEmpty,
           force || settings.syncIntervalHours > 0 else { return }
@@ -103,9 +155,18 @@ public final class AppModel {
     let sources = settings.enabledUpcomingSources
     let interval = settings.syncIntervalHours
     let sync = UpcomingSync(store: UpcomingStore(queue: queue), client: upcomingClient)
+    let localizer = settings.tmdbApiKey.flatMap { $0.isEmpty ? nil : UpcomingLocalizationSync(queue: queue, client: TmdbClient(apiKey: $0)) }
     let task = Task {
       try await sync.run(sources: sources, force: force, intervalHours: interval) { [weak self] phase in
         await self?.setUpcomingPhase(phase)
+      }
+      if sources.contains(.whenToStream), let localizer {
+        do {
+          try await localizer.run { [weak self] phase in await self?.setUpcomingPhase(phase) }
+        } catch {
+          try Task.checkCancellation()
+          upcomingError = "排期已保留，中文片名核验暂未完成，可稍后重试"
+        }
       }
     }
     upcomingTask = task
@@ -203,6 +264,7 @@ public final class AppModel {
     activeEngineTask = engineTask
     let summary = await engineTask.value
     lastSummary = summary
+    await reloadExternalRows()
     lastSyncFinishedAt = Date()
     // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情；
     // stopped 是用户主动停止，不冒充错误也不冒充成功
@@ -261,6 +323,7 @@ public final class AppModel {
     }
     settings = newSettings
     settingsStore.save(newSettings)
+    await reloadExternalRows()
     PosterLoader.shared.updateSettings(newSettings)
     await scheduleNextRun()
   }

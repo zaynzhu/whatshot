@@ -30,6 +30,13 @@ public struct UpcomingRelease: Codable, Equatable, Sendable, Identifiable {
   public var rawSchedule: String
   public var sourceReportsAvailable = false
   public var observedAt: Date
+  public var originalTitle: String? = nil
+  public var productionYear: Int? = nil
+  public var directors: [String]? = nil
+
+  public var identityFingerprint: String {
+    [originalTitle ?? title, productionYear.map(String.init) ?? "", (directors ?? []).sorted().joined(separator: "|")].joined(separator: "\n")
+  }
 
   public var id: String { "\(source.rawValue)|\(sourceID)|\(kind)|\(region)|\(releaseType)" }
   public var timeText: String { releaseDate == nil ? "待定档" : (releaseTime ?? "时间待公布") }
@@ -46,6 +53,11 @@ public struct UpcomingWork: Identifiable, Sendable {
   public let id: String
   public let releaseDate: String?
   public let releases: [UpcomingRelease]
+  public init(id: String, releaseDate: String?, releases: [UpcomingRelease]) {
+    self.id = id
+    self.releaseDate = releaseDate
+    self.releases = releases
+  }
   public var title: String { releases.first?.title ?? "" }
   public var kind: String { releases.first?.kind ?? "" }
   public var posterURL: String? { releases.compactMap(\.posterURL).first }

@@ -35,6 +35,9 @@ struct ContentView: View {
     .preferredColorScheme(.dark)
     // repo 异步初始化：nil→就位 翻转时重跑，避免首屏拿不到上次同步时间
     .task(id: app.repo == nil) { await reloadLastSync() }
+    .onChange(of: app.externalFocus) { _, focus in
+      if focus != nil { tab = 4 }
+    }
     .onChange(of: app.lastSummary) { _, _ in
       Task { await reloadLastSync() }
     }

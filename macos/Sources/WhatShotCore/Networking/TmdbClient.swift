@@ -34,11 +34,12 @@ public struct TmdbClient: Sendable {
   let apiKey: String
   let limiter: RateLimiter
   let session: URLSession
+  private static let sharedLimiter = RateLimiter(interval: 2.0)
 
   /// 独立限频器：与豆瓣、butai0 各自计数。TMDB 官方限流宽松，按全局规范 ≥2 秒固定间隔即可。
-  public init(apiKey: String, limiter: RateLimiter = RateLimiter(interval: 2.0), session: URLSession = .shared) {
+  public init(apiKey: String, limiter: RateLimiter? = nil, session: URLSession = .shared) {
     self.apiKey = apiKey
-    self.limiter = limiter
+    self.limiter = limiter ?? Self.sharedLimiter
     self.session = session
   }
 
@@ -109,7 +110,7 @@ public struct TmdbClient: Sendable {
   // MARK: - HTTP
 
   /// 统一发 GET。返回 (data, httpStatus)。401 抛 unauthorized（key 无效，调用方停批）
-  private func get(_ pathAndQuery: String) async throws -> (Data, Int) {
+  func get(_ pathAndQuery: String) async throws -> (Data, Int) {
     await limiter.waitTurn()
     guard let url = URL(string: "\(Self.baseURL)\(pathAndQuery)") else {
       throw TmdbError.invalidResponse("URL 构造失败")

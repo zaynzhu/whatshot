@@ -15,6 +15,9 @@ struct ExternalHeatTabView: View {
   @State private var detailTarget: VideoRepository.VideoRow?
   /// 选中的来源榜（nil = 自动选组内最优名次的组）；不同榜单名次不可比，不提供"全部"混排
   @State private var selectedSource: String?
+  @State private var upcomingTarget: UpcomingWork?
+  @State private var upcomingWorks: [String: UpcomingWork] = [:]
+  @State private var upcomingConnections: [String: WorkConnection] = [:]
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -52,13 +55,16 @@ struct ExternalHeatTabView: View {
       }
     }
     .background(Theme.bg)
-    .task { await reload() }
+    .task(id: "\(app.externalRevision)|\(app.upcomingRevision)|\(app.settings.enabledUpcomingSources)") { await reload(); if selectedSource == nil { selectedSource = app.externalFocus?.source } }
     // 同步完成后刷新（新快照可能带来新信号）
     .onChange(of: app.lastSummary) { _, _ in
       Task { await reload() }
     }
     .sheet(item: $detailTarget) { target in
       DetailSheet(video: target, repo: app.repo)
+    }
+    .sheet(item: $upcomingTarget) { target in
+      UpcomingDetailSheet(row: target, connection: upcomingConnections[target.id] ?? .empty)
     }
   }
 
@@ -120,8 +126,19 @@ struct ExternalHeatTabView: View {
     let store = ExternalHeatStore(queue: queue)
     loading = rows.isEmpty
     defer { loading = false }
-    rows = (try? await store.displayRows()) ?? []
+    rows = configured ? ((try? await store.displayRows()) ?? []) : []
     state = try? await store.state()
+    let connectionStore = WorkConnectionStore(queue: queue)
+    let releases = (try? await connectionStore.activeReleases(sources: app.settings.enabledUpcomingSources)) ?? []
+    let links = (try? await connectionStore.connections(for: releases, externalEnabled: configured)) ?? [:]
+    var grouped: [String: [UpcomingRelease]] = [:]
+    for release in releases {
+      if let mediaID = links[release.id]?.mediaID { grouped[mediaID, default: []].append(release) }
+    }
+    upcomingWorks = grouped.mapValues { items in
+      UpcomingWork(id: links[items[0].id]!.mediaID!, releaseDate: items.compactMap(\.releaseDate).min(), releases: items)
+    }
+    upcomingConnections = grouped.mapValues { WorkConnection.combined($0.compactMap { links[$0.id] }) }
   }
 
   /// 空态：图标 + 引导 + 直接开拉的按钮（不用去找右上角）
@@ -211,25 +228,42 @@ struct ExternalHeatTabView: View {
     let signals = rows.filter { $0.source == current }
       .sorted { ($0.rank ?? 999) < ($1.rank ?? 999) }
 
-    return ScrollView {
-      sourceChips
-      Rectangle().fill(Theme.hairline).frame(height: 1)
-      if let current, let explanation = ExternalSignalMeaning.explanation(for: current) {
-        Text(explanation)
-          .font(.system(size: 11))
-          .foregroundStyle(Theme.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 20)
-          .padding(.top, 12)
+    return ScrollViewReader { proxy in
+      ScrollView {
+        sourceChips
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+        if let current, let explanation = ExternalSignalMeaning.explanation(for: current) {
+          Text(explanation)
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+        }
+        LazyVGrid(columns: columns, spacing: 18) {
+          ForEach(signals, id: \.id) { row in
+            signalCard(row)
+              .id(row.id)
+              .overlay {
+                if app.externalFocus?.rowID == row.id {
+                  RoundedRectangle(cornerRadius: 10).stroke(Theme.accent.opacity(0.7), lineWidth: 1).padding(-6).allowsHitTesting(false)
+                }
+              }
+          }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .padding(.bottom, 26)
       }
-      LazyVGrid(columns: columns, spacing: 18) {
-        ForEach(signals, id: \.id) { row in
-          signalCard(row)
+      .task(id: "\(currentSource ?? "")|\(app.externalFocus?.token.uuidString ?? "")|\(rows.count)") {
+        if let target = app.externalFocus, target.source == currentSource, rows.contains(where: { $0.id == target.rowID }) {
+          await Task.yield()
+          proxy.scrollTo(target.rowID, anchor: .center)
         }
       }
-      .padding(.horizontal, 20)
-      .padding(.vertical, 14)
-      .padding(.bottom, 26)
+      .onChange(of: app.externalFocus) { _, target in
+        if let target { selectedSource = target.source }
+      }
     }
   }
 
@@ -237,7 +271,7 @@ struct ExternalHeatTabView: View {
   private func signalCard(_ row: ExternalHeatStore.DisplayRow) -> some View {
     let title = row.video?.title.decodingHTMLEntities ?? row.mediaTitle
     return VStack(alignment: .leading, spacing: 6) {
-      PosterImage(url: posterURL(for: row), hovering: row.video != nil)
+      SignalPoster(url: posterURL(for: row), signals: [row])
         .overlay(alignment: .topLeading) {
           // 名次：海报左上角大角标
           Text(row.rank.map { "#\($0)" } ?? "—")
@@ -250,6 +284,12 @@ struct ExternalHeatTabView: View {
 
 
       VStack(alignment: .leading, spacing: 3) {
+        if let work = upcomingWorks[row.mediaID] {
+          Button { upcomingTarget = work } label: {
+            Label("查看上线安排", systemImage: "calendar")
+              .font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.accent)
+          }.buttonStyle(.plain).padding(.vertical, 3)
+        }
         Text(title)
           .font(.system(size: 12, weight: .semibold))
           .foregroundStyle(Theme.textPrimary)
@@ -282,8 +322,8 @@ struct ExternalHeatTabView: View {
             .font(.system(size: 9.5).monospacedDigit())
           Spacer()
           // 名次变化：贴着采集时间放大一号，看得见
-          if !ExternalSignalMeaning.isDoubanNonHeat(row.source) {
-            if let delta = row.rankDelta, delta > 0 {
+          if ExternalSignalPresentation.isHeat(row.source) && ExternalSignalPresentation.isFresh(row) {
+            if let delta = ExternalSignalPresentation.rise(row) {
               Text("↑\(delta)")
                 .font(.system(size: 11, weight: .heavy).monospacedDigit())
                 .foregroundStyle(Theme.accent)
@@ -291,10 +331,6 @@ struct ExternalHeatTabView: View {
               Text("↓\(-delta)")
                 .font(.system(size: 11, weight: .heavy).monospacedDigit())
                 .foregroundStyle(Theme.textTertiary)
-            } else if row.previousRank == nil, row.rank != nil {
-              Text("NEW")
-                .font(.system(size: 9.5, weight: .heavy))
-                .foregroundStyle(Theme.accent)
             }
           }
         }
@@ -306,6 +342,8 @@ struct ExternalHeatTabView: View {
     .onTapGesture {
       if let video = row.video {
         detailTarget = video
+      } else if let work = upcomingWorks[row.mediaID] {
+        upcomingTarget = work
       }
     }
     .help(row.video == nil ? "未关联本地条目（缺少可精确匹配的身份）" : "查看本地详情")

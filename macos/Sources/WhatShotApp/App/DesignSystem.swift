@@ -2,7 +2,7 @@ import SwiftUI
 import WhatShotCore
 
 /// 设计系统「深夜画廊·档案版」：单色琥珀纪律（每次出现都携带信息），
-/// 零阴影零渐变托底，层级靠字重、等宽数字与留白。
+/// 层级靠字重、等宽数字与留白；关联榜单的海报允许琥珀光边及有限扫光。
 /// 参考 re0.me（单黄/eyebrow/极端字重对比）与 whatsnew（cinemaGold/serif 拉丁/等宽数字）。
 enum Theme {
   static let bg = Color(red: 0.063, green: 0.063, blue: 0.075)       // #101013 页底
@@ -333,6 +333,7 @@ struct VideoMetaLine: View {
 /// 画廊卡：名次小片（可选）+ 海报 + 片名 + meta 行；hover 仅描边亮起
 /// movement：名次变化标记（升/降/新入榜），仅热门榜传入
 struct GalleryCard: View {
+  @Environment(AppModel.self) private var app
   let video: VideoRepository.VideoRow
   var rank: Int? = nil
   var showDefinition = false
@@ -352,7 +353,7 @@ struct GalleryCard: View {
         }
         .padding(.bottom, 1)
       }
-      PosterImage(url: video.posterURL, hovering: hovering)
+      SignalPoster(url: video.posterURL, signals: app.signals(forVideo: video.id))
       Text(video.title.decodingHTMLEntities)
         .font(.system(size: 12.5, weight: .semibold))
         .foregroundStyle(Theme.textPrimary)
@@ -375,6 +376,7 @@ struct GalleryCard: View {
             ? "来源：站方（butai0），已排除明确标注的特殊场次\n原始上映信息：\(video.releaseInfo ?? "未知")"
             : "来源：\(video.premiereDate == nil ? "影片年份" : video.premiereSource ?? "未知")\n原始上映信息：\(video.releaseInfo ?? "未知")")
       }
+      ExternalSignalBadge(signals: app.signals(forVideo: video.id))
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

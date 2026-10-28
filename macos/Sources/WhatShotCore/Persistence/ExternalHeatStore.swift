@@ -38,7 +38,7 @@ public struct ExternalHeatStore: Sendable {
   }
 
   /// 展示行：信号 + 匹配的本地条目（nil = 未关联）
-  public struct DisplayRow: Sendable, Equatable {
+  public struct DisplayRow: Sendable, Equatable, Identifiable {
     public var source: String
     public var platform: String?
     public var region: String?

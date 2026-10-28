@@ -11,6 +11,7 @@ struct DetailSheet: View {
   @Environment(AppModel.self) private var app
   @State private var observations: [VideoRepository.ObservationRow] = []
   @State private var watched = false
+  @State private var upcomingReleases: [UpcomingRelease] = []
   /// 外部热度（2026-09-22 WhatsNew 可选接入）：匹配合作品的外部信号
   @State private var externalDetails: [ExternalHeatStore.CachedDetail] = []
   @State private var externalSignals: [ExternalHeatStore.DisplayRow] = []
@@ -31,17 +32,20 @@ struct DetailSheet: View {
     .frame(width: 620)
     .frame(maxHeight: 600)
     .background(Theme.elevated)
-    .task {
+    .task(id: "\(app.upcomingRevision)|\(app.externalRevision)|\(app.settings.enabledUpcomingSources)|\(app.externalEnabled)") {
       await loadObservations()
       watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
       await loadExternalSignals()
+      if let queue = app.queue {
+        upcomingReleases = (try? await WorkConnectionStore(queue: queue).releases(forVideo: video.id, sources: app.settings.enabledUpcomingSources, externalEnabled: app.externalEnabled)) ?? []
+      }
     }
   }
 
   private var detailContent: some View {
     HStack(alignment: .top, spacing: 18) {
       // 左：大海报（与画廊同源组件，固定宽）
-      PosterImage(url: video.posterURL)
+      SignalPoster(url: video.posterURL, signals: externalSignals)
         .frame(width: 180)
         .fixedSize()
 
@@ -90,32 +94,15 @@ struct DetailSheet: View {
 
         watchlistButton
 
+        if !upcomingReleases.isEmpty {
+          Divider().overlay(Theme.hairline)
+          UpcomingScheduleList(releases: upcomingReleases)
+        }
         if !externalSignals.isEmpty {
-          Rectangle().fill(Theme.hairline).frame(height: 1)
-          VStack(alignment: .leading, spacing: 4) {
-            Text("外部热度 · WhatsNew")
-              .font(.system(size: 10, weight: .semibold).monospacedDigit())
-              .tracking(1.6)
-              .foregroundStyle(Theme.textTertiary)
-            ForEach(externalSignals, id: \.id) { signal in
-              // 来源 + 榜 + 名次：保留来源与口径，不混成统一排名；
-              // 时间是站方采集时间，不冒充本地取到的时间
-              HStack(spacing: 8) {
-                Text(signal.rank.map { "#\($0)" } ?? "—")
-                  .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                  .foregroundStyle(Theme.accent)
-                  .frame(width: 30, alignment: .leading)
-                VStack(alignment: .leading, spacing: 1) {
-                  Text(ExternalSignalMeaning.label(for: signal.source) + signalRankingSuffix(signal))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                  Text("采集 " + ExternalHeatTabView.shortTime(signal.capturedAt))
-                    .font(.system(size: 9.5).monospacedDigit())
-                    .foregroundStyle(Theme.textTertiary)
-                }
-              }
-            }
+          Divider().overlay(Theme.hairline)
+          ExternalSignalsPanel(signals: externalSignals) { signal in
+            dismiss()
+            app.openExternal(signal)
           }
         }
 
@@ -162,7 +149,7 @@ struct DetailSheet: View {
 
   /// 外部信号（本地快照查询，零网络请求）
   private func loadExternalSignals() async {
-    guard let queue = app.queue else { return }
+    guard app.externalEnabled, let queue = app.queue else { externalSignals = []; externalDetails = []; return }
     let store = ExternalHeatStore(queue: queue)
     externalSignals = (try? await store.signals(forVideo: video.id)) ?? []
     externalDetails = (try? await store.details(forVideo: video.id)) ?? []

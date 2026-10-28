@@ -242,6 +242,13 @@ enum Schema {
     fetched_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS upcoming_localizations (
+    release_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    checked_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS external_heat_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_success_at INTEGER,           -- 最近一次成功响应的本地时间
