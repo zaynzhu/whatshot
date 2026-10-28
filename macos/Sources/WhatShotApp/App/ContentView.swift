@@ -8,7 +8,7 @@ struct ContentView: View {
   @State private var tab = 0
   @State private var lastSync: Date?
 
-  private let tabs = ["热门榜", "追剧", "剧集", "电影", "外部热度", "设置"]
+  private let tabs = ["热门榜", "追剧", "剧集", "电影", "外部热度", "即将上线", "设置"]
   /// 追剧 tab 的下标：未读圆点挂它身上
   private let watchlistTabIndex = 1
 
@@ -25,6 +25,7 @@ struct ContentView: View {
         case 2: TVTabView()
         case 3: MovieTabView()
         case 4: ExternalHeatTabView()
+        case 5: UpcomingTabView()
         default: SettingsTabView()
         }
       }
@@ -40,77 +41,94 @@ struct ContentView: View {
   }
 
   private var headerBar: some View {
-    HStack(spacing: 22) {
-      // 品牌：火焰是全应用唯一的橙色图标（身份锚点）
-      HStack(spacing: 6) {
-        Image(systemName: "flame.fill")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(Theme.accent)
-        Text("WhatShot")
-          .font(.system(size: 13.5, weight: .heavy))
-          .foregroundStyle(Theme.textPrimary)
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 22) {
+        brand
+        navigation
+        Spacer(minLength: 12)
+        syncControls
       }
-
-      HStack(spacing: 18) {
-        ForEach(Array(tabs.enumerated()), id: \.offset) { index, title in
-          TextTab(title: title, selected: tab == index) {
-            withAnimation(.easeOut(duration: 0.15)) { tab = index }
-          }
-          // 追剧未读圆点（定案七）：有更新时提示，进入追剧页即读
-          .overlay(alignment: .topTrailing) {
-            if index == watchlistTabIndex, app.watchlistUnread > 0 {
-              Circle()
-                .fill(Theme.accent)
-                .frame(width: 5, height: 5)
-                .offset(x: 6, y: -2)
-            }
-          }
+      VStack(alignment: .leading, spacing: 10) {
+        HStack {
+          brand
+          Spacer()
+          syncControls
         }
+        navigation
       }
-
-      Spacer()
-
-      // 同步状态区：状态文字 + 同步按钮
-      // fixedSize 防挤压：窄窗（台前调度缩放）下压碎的是 tab 文字而非按钮本体
-      HStack(spacing: 12) {
-        if app.syncing {
-          ProgressView()
-            .controlSize(.small)
-            .tint(Theme.accent)
-          // 实时阶段（定案七）："拉取本周热门" / "首播日补全 · 已补 5"
-          Text(app.syncPhase ?? "同步中…")
-            .font(.system(size: 11))
-            .foregroundStyle(Theme.textSecondary)
-          OutlineButton(title: "停止", icon: "xmark") {
-            app.stopSync()
-          }
-        } else {
-          if let error = app.lastError {
-            statusButton(text: { _ in "同步出错" }, color: .red.opacity(0.9), help: error)
-          } else if let warning = app.lastWarning {
-            // 琥珀提示带上距上次同步的相对时间：几小时前的老问题和刚发生的问题观感不同
-            statusButton(text: { now in
-              let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0, relativeTo: now))" } ?? ""
-              return "部分完成\(ago)"
-            }, color: Theme.accent,
-                         help: warning + "\n主数据已更新，失败部分下轮自动重试")
-          } else if let summary = app.lastSummary, summary.status == .stopped,
-                    let finishedAt = app.lastSyncFinishedAt {
-            statusButton(text: { now in "已停止 \(Self.relativeTime(finishedAt, relativeTo: now))" }, color: Theme.textTertiary,
-                         help: "上次同步被手动停止，主数据已保留；补全下轮自动继续")
-          } else if let lastSync {
-            statusButton(text: { now in "已同步 \(Self.relativeTime(lastSync, relativeTo: now))" }, color: Theme.textTertiary, help: lastSyncSummary)
-          }
-          OutlineButton(title: "同步", icon: "arrow.clockwise") {
-            Task { await app.syncNow() }
-          }
-        }
-      }
-      .fixedSize()
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 10)
     .background(Theme.bg)
+  }
+
+  private var brand: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "flame.fill")
+        .font(.system(size: 12, weight: .bold))
+        .foregroundStyle(Theme.accent)
+      Text("WhatShot")
+        .font(.system(size: 13.5, weight: .heavy))
+        .foregroundStyle(Theme.textPrimary)
+    }
+  }
+
+  private var navigation: some View {
+    HStack(spacing: 18) {
+      ForEach(Array(tabs.enumerated()), id: \.offset) { index, title in
+        TextTab(title: title, selected: tab == index) {
+          withAnimation(.easeOut(duration: 0.15)) { tab = index }
+        }
+        // 追剧未读圆点（定案七）：有更新时提示，进入追剧页即读
+        .overlay(alignment: .topTrailing) {
+          if index == watchlistTabIndex, app.watchlistUnread > 0 {
+            Circle()
+              .fill(Theme.accent)
+              .frame(width: 5, height: 5)
+              .offset(x: 6, y: -2)
+          }
+        }
+      }
+    }
+    .fixedSize()
+  }
+
+  private var syncControls: some View {
+    HStack(spacing: 12) {
+      if app.syncing {
+        ProgressView()
+          .controlSize(.small)
+          .tint(Theme.accent)
+        // 实时阶段（定案七）："拉取本周热门" / "首播日补全 · 已补 5"
+        Text(app.syncPhase ?? "同步中…")
+          .font(.system(size: 11))
+          .foregroundStyle(Theme.textSecondary)
+        OutlineButton(title: "停止", icon: "xmark") {
+          app.stopSync()
+        }
+      } else {
+        if let error = app.lastError {
+          statusButton(text: { _ in "同步出错" }, color: .red.opacity(0.9), help: error)
+        } else if let warning = app.lastWarning {
+          // 琥珀提示带上距上次同步的相对时间：几小时前的老问题和刚发生的问题观感不同
+          statusButton(text: { now in
+            let ago = app.lastSyncFinishedAt.map { " · \(Self.relativeTime($0, relativeTo: now))" } ?? ""
+            return "部分完成\(ago)"
+          }, color: Theme.accent,
+                       help: warning + "\n主数据已更新，失败部分下轮自动重试")
+        } else if let summary = app.lastSummary, summary.status == .stopped,
+                  let finishedAt = app.lastSyncFinishedAt {
+          statusButton(text: { now in "已停止 \(Self.relativeTime(finishedAt, relativeTo: now))" }, color: Theme.textTertiary,
+                       help: "上次同步被手动停止，主数据已保留；补全下轮自动继续")
+        } else if let lastSync {
+          statusButton(text: { now in "已同步 \(Self.relativeTime(lastSync, relativeTo: now))" }, color: Theme.textTertiary, help: lastSyncSummary)
+        }
+        OutlineButton(title: "同步", icon: "arrow.clockwise") {
+          Task { await app.syncNow() }
+        }
+      }
+    }
+    .fixedSize()
   }
 
   private var lastSyncSummary: String {

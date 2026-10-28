@@ -26,6 +26,12 @@ public final class AppModel {
   /// 追剧未读数（定案七）：水位（上次查看汇总时刻）以来有集数变化的条目数。
   /// 追剧页进入即读（水位推进），同步完成后重算
   public private(set) var watchlistUnread = 0
+  public private(set) var syncingUpcoming = false
+  public private(set) var upcomingPhase: String?
+  public private(set) var upcomingError: String?
+  public private(set) var upcomingRevision = 0
+  private var upcomingTask: Task<Void, Error>?
+  private let upcomingClient = UpcomingClient()
 
   private var syncTask: Task<Void, Never>?
   /// 运行中的同步引擎 Task：手动停止 = cancel 它，引擎在步骤边界退出（已提交批次保留）
@@ -63,7 +69,9 @@ public final class AppModel {
       repo = newRepo
       try await repo?.recoverInterruptedRuns(at: Date())
       // 启动后台同步：距上次同步超过间隔才跑
-      await maybeSync(force: false)
+      async let main: Void = maybeSync(force: false)
+      async let upcoming: Void = syncUpcoming(force: false)
+      _ = await (main, upcoming)
       await scheduleNextRun()
     } catch {
       lastError = "数据库初始化失败：\(error.localizedDescription)"
@@ -72,18 +80,56 @@ public final class AppModel {
 
   /// 手动触发同步
   func syncNow() async {
-    await maybeSync(force: true)
+    async let main: Void = maybeSync(force: true)
+    async let upcoming: Void = syncUpcoming(force: true)
+    _ = await (main, upcoming)
   }
 
   /// 手动停止（定案七）：cancel 引擎 Task，步骤边界退出——已提交批次保留，
   /// 不中断事务、不留伪成功状态（收尾标 stopped，非 failed/success）
   func stopSync() {
     activeEngineTask?.cancel()
+    stopUpcoming()
+  }
+
+  func stopUpcoming() { upcomingTask?.cancel() }
+
+  func syncUpcoming(force: Bool = true) async {
+    guard !syncingUpcoming, let queue, !settings.enabledUpcomingSources.isEmpty,
+          force || settings.syncIntervalHours > 0 else { return }
+    syncingUpcoming = true
+    upcomingError = nil
+    upcomingPhase = "准备读取排期"
+    let sources = settings.enabledUpcomingSources
+    let interval = settings.syncIntervalHours
+    let sync = UpcomingSync(store: UpcomingStore(queue: queue), client: upcomingClient)
+    let task = Task {
+      try await sync.run(sources: sources, force: force, intervalHours: interval) { [weak self] phase in
+        await self?.setUpcomingPhase(phase)
+      }
+    }
+    upcomingTask = task
+    defer {
+      syncingUpcoming = false
+      upcomingPhase = nil
+      upcomingTask = nil
+      upcomingRevision += 1
+    }
+    do { try await task.value }
+    catch is CancellationError { upcomingError = "已停止刷新，已完成的来源保留" }
+    catch { upcomingError = "待播本地状态读取或保存失败，请稍后重试" }
+  }
+
+  private func setUpcomingPhase(_ value: String) {
+    upcomingPhase = value
+    // 前一来源已提交，及时刷新页面，不必等待最慢来源完成。
+    upcomingRevision += 1
   }
 
   func maybeSync(force: Bool) async {
     guard !syncing, let repo = repo else { return }
     if !force {
+      guard settings.syncIntervalHours > 0 else { return }
       // 未到间隔则跳过：读取最近一次成功同步时间
       if let lastRun = (try? await repo.lastSuccessfulSync()) ?? nil,
          Date().timeIntervalSince(lastRun) < Double(settings.syncIntervalHours) * 3600 {
@@ -200,13 +246,19 @@ public final class AppModel {
     syncTask = Task.detached(priority: .background) { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
       guard !Task.isCancelled else { return }
-      await self?.maybeSync(force: true)
+      async let main: Void? = self?.maybeSync(force: true)
+      async let upcoming: Void? = self?.syncUpcoming(force: false)
+      _ = await (main, upcoming)
       await self?.scheduleNextRun()
     }
   }
 
   /// 保存设置：立即生效；间隔变更后重排任务；海报缓存容量立即接入加载器
   func updateSettings(_ newSettings: ButaiSettings) async {
+    if newSettings.enabledUpcomingSources != settings.enabledUpcomingSources
+      || (newSettings.syncIntervalHours == 0 && settings.syncIntervalHours > 0) {
+      stopUpcoming()
+    }
     settings = newSettings
     settingsStore.save(newSettings)
     PosterLoader.shared.updateSettings(newSettings)
