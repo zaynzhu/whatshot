@@ -39,6 +39,16 @@ public enum UpcomingWindow: String, CaseIterable, Sendable {
   case recent = "近期排期"
 }
 
+/// 展示分组，不修改来源身份；平台排期独立保留，不能互相借用时刻。
+public struct UpcomingWork: Identifiable, Sendable {
+  public let id: String
+  public let releaseDate: String?
+  public let releases: [UpcomingRelease]
+  public var title: String { releases.first?.title ?? "" }
+  public var kind: String { releases.first?.kind ?? "" }
+  public var posterURL: String? { releases.compactMap(\.posterURL).first }
+}
+
 public struct UpcomingSourceState: Equatable, Sendable {
   public var source: UpcomingSource
   public var lastAttemptAt: Date?

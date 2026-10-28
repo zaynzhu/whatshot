@@ -7,7 +7,7 @@ struct UpcomingTabView: View {
   @State private var source = "all"
   @State private var kind = "all"
   @State private var window: UpcomingWindow = .future
-  @State private var rows: [UpcomingRelease] = []
+  @State private var rows: [UpcomingWork] = []
   @State private var states: [UpcomingSourceState] = []
   @State private var loading = false
   @State private var hasMore = false
@@ -98,7 +98,7 @@ struct UpcomingTabView: View {
                     .font(.system(size: 15, weight: .bold).monospacedDigit())
                   Rectangle().fill(Theme.hairline).frame(height: 1)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)], spacing: 18) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16, alignment: .top)], spacing: 18) {
                   ForEach(rows.filter { ($0.releaseDate ?? "待定档") == day }) { row in
                     UpcomingCard(row: row)
                   }
@@ -157,7 +157,7 @@ struct UpcomingTabView: View {
       }
       Text("自动刷新沿用设置中的同步间隔。关闭来源后隐藏其缓存并停止当前刷新；开启后可手动刷新。")
       Divider()
-      Text("芒果与海外数字发行仍在验证入口，尚未接入。海外将区分地区、购买、租赁与订阅。")
+      Text("当前支持优酷、爱奇艺、腾讯。海外数字发行尚未接入，将区分地区、购买、租赁与订阅。")
     }
     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
     .padding(20).frame(width: 320)
@@ -185,7 +185,7 @@ struct UpcomingTabView: View {
     do {
       let store = UpcomingStore(queue: queue)
       let states = try await store.states()
-      let page = try await store.releases(sources: selectedSources, kind: kind == "all" ? nil : kind, window: window)
+      let page = try await store.works(sources: selectedSources, kind: kind == "all" ? nil : kind, window: window)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       self.states = states
       rows = page
@@ -203,7 +203,7 @@ struct UpcomingTabView: View {
     let generation = queryGeneration
     loading = true
     do {
-      let page = try await UpcomingStore(queue: queue).releases(sources: selectedSources,
+      let page = try await UpcomingStore(queue: queue).works(sources: selectedSources,
         kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       rows += page
@@ -217,34 +217,42 @@ struct UpcomingTabView: View {
 }
 
 private struct UpcomingCard: View {
-  let row: UpcomingRelease
+  let row: UpcomingWork
   var body: some View {
-    if let url = URL(string: row.sourceURL) {
-      Link(destination: url) {
-        VStack(alignment: .leading, spacing: 6) {
-          PosterImage(url: row.posterURL).id(row.posterURL)
-          Text(row.title).font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Theme.textPrimary).lineLimit(2)
-          Text(row.timeText).font(.system(size: 15, weight: .bold).monospacedDigit())
-            .foregroundStyle(row.releaseTime == nil ? Theme.textSecondary : Theme.accent)
-          Text("\(row.source.title) · \(row.kind == "movie" ? "电影" : "剧集")")
-            .foregroundStyle(Theme.textSecondary)
-          Text(row.rawSchedule).foregroundStyle(Theme.textTertiary).lineLimit(2)
-          if row.sourceReportsAvailable {
-            Text("来源标记已上线").foregroundStyle(Theme.accent)
+    VStack(alignment: .leading, spacing: 7) {
+      PosterImage(url: row.posterURL).id(row.posterURL)
+      Text(row.title).font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(Theme.textPrimary).lineLimit(2)
+      Text(row.kind == "movie" ? "电影" : "剧集")
+        .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+      ForEach(row.releases) { release in
+        if let url = URL(string: release.sourceURL) {
+          Link(destination: url) {
+            VStack(alignment: .leading, spacing: 3) {
+              HStack {
+                Text(release.source.title).fontWeight(.semibold)
+                Spacer(minLength: 2)
+                Image(systemName: "arrow.up.right").font(.system(size: 8))
+              }.foregroundStyle(Theme.textSecondary)
+              Text(release.releaseDate.map { $0 + " · " + release.timeText } ?? "待定档")
+                .monospacedDigit()
+                .foregroundStyle(release.releaseTime == nil ? Theme.textSecondary : Theme.accent)
+              if release.sourceReportsAvailable {
+                Text("来源标记已上线").foregroundStyle(Theme.accent)
+              }
+            }
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
           }
-          Text("核实于 \(ContentView.relativeTime(row.observedAt)) ↗")
-            .foregroundStyle(Theme.textTertiary)
-          if row.sourceURL == "https://www.iqiyi.com/newOnlinePCW" {
-            Text("详情未公布 · 查看平台片单").foregroundStyle(Theme.textTertiary)
-          }
+          .buttonStyle(.plain)
+          .help("\(release.rawSchedule)\n核实于 \(ContentView.relativeTime(release.observedAt))\n" +
+            (release.sourceURL == "https://www.iqiyi.com/newOnlinePCW" ? "详情未公布，打开平台片单" : "打开平台原站"))
+          if release.id != row.releases.last?.id { Divider().overlay(Theme.hairline) }
         }
-        .font(.system(size: 10.5))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
-      .help("\(row.title) · \(row.rawSchedule)\n打开\(row.source.title)原站；地区：中国大陆")
     }
+    .font(.system(size: 10.5))
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
