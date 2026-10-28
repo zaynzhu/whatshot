@@ -63,3 +63,11 @@ WhatShot 是独立的播出影视热度与播出进度（更新至第 X 集）�
 - 已对接 WhatsNew `POST /api/media/lookup`（契约 v1）：追剧条目按 movie/series 分批（每轮各 ≤1 请求）反查 WhatsNew，matched 的信号写 external_heat、评分写 external_media_details；unmatched（含单集 tt 号，WhatsNew 不桥接）如实跳过。**base URL 只走 settings.whatsnewBaseURL 可配置项，任何连调/测试地址不得硬编码进代码**。
 - **部署过渡语义**：生产 WhatsNew 未部署新版时 lookup 404 **静默降级**（不产 warning、不阻断主同步，部署后自动生效）；其他失败如实 warning。 WhatsNew 正式部署后**用户会把新地址回传**，届时仅需更新设置中的 whatsnewBaseURL，无需改代码。
 - WhatsNew 端契约变更走回传协商，不在 WhatShot 端静默适配。
+
+## 新片待播时间线（2026-10-28）
+
+- 独立「即将上线」标签页直连优酷、爱奇艺、腾讯公开片单，不依赖 WhatsNew 服务，不写 videos 首播日或热度；详见 `docs/plans/upcoming-timeline.md`。
+- 优酷仅采预约身份可验证的电影／剧集；爱奇艺限 cid 1/2，安全解码 Nuxt 字面量，不执行远端脚本；腾讯仅确认待播，不使用 `publish_date` 作为平台上线日期。
+- 日期与时分分开保存，未知时刻不得填零点。国内按 Asia/Shanghai 解释；源撤回日期须清空旧日期。原站未建详情页时回到官方片单，不伪造详情 URL。
+- 每源完整分页后事务替换，分页失败／取消保留旧快照；每源独立限频 ≥2 秒，匿名令牌仅内存。来源关闭隐藏旧缓存并取消当前刷新。复用现有同步间隔，0 表示关闭自动刷新；待播不被 butai0 探活失败阻断。
+- 芒果及海外数字发行尚未接入；海外必须区分地区、预购、购买、租赁与订阅，仅日期不换算成北京时间午夜。
