@@ -33,6 +33,9 @@ public struct ButaiSettings: Codable, Equatable, Sendable {
   public var whatsnewBaseURL: String?
   /// 显式开关（nil = 关闭）；baseURL 与 enabled 任一不满足时整步跳过零请求
   public var whatsnewEnabled: Bool?
+  /// nil 兼容旧设置，默认启用三家公开片单；空数组表示全部关闭。
+  public var upcomingSources: [UpcomingSource]?
+  public var enabledUpcomingSources: [UpcomingSource] { upcomingSources ?? UpcomingSource.allCases }
 
   /// S3 镜像是否启用（四项配置齐全才开）
   public var s3MirrorEnabled: Bool {

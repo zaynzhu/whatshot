@@ -176,6 +176,29 @@ enum Schema {
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS upcoming_releases (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    release_date TEXT,
+    release_time TEXT,
+    payload TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    fetched_at INTEGER NOT NULL,
+    removed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_upcoming_date ON upcoming_releases(active, release_date, release_time, id);
+  CREATE INDEX IF NOT EXISTS idx_upcoming_source ON upcoming_releases(source, active);
+
+  CREATE TABLE IF NOT EXISTS upcoming_source_state (
+    source TEXT PRIMARY KEY,
+    last_attempt_at INTEGER,
+    last_success_at INTEGER,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS watchlist (
     video_id INTEGER PRIMARY KEY REFERENCES videos(id),
     created_at INTEGER NOT NULL            -- 关注时刻：更新汇总的水位起点（关注前历史不报，定案七）
