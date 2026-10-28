@@ -12,6 +12,7 @@ struct WhatsNewEngineTests {
   final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var routes: [String: (status: Int, body: String)] = [:]
     nonisolated(unsafe) static var requestedPaths: [String] = []
+    nonisolated(unsafe) static var cancelledPath: String?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -19,6 +20,10 @@ struct WhatsNewEngineTests {
     override func startLoading() {
       let path = request.url?.path ?? ""
       Self.requestedPaths.append(path)
+      if path == Self.cancelledPath {
+        client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        return
+      }
       guard let route = Self.routes[path] else {
         client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
         return
@@ -51,6 +56,7 @@ struct WhatsNewEngineTests {
   func reset() {
     StubProtocol.routes = [:]
     StubProtocol.requestedPaths = []
+    StubProtocol.cancelledPath = nil
   }
 
   func stubHealth() {
@@ -59,6 +65,31 @@ struct WhatsNewEngineTests {
   }
 
   // MARK: - 成功链路
+
+  @Test func cancellationPreservesConnectionStateAndSnapshot() async throws {
+    for path in ["/api/health", "/api/media/m1"] {
+      reset()
+      stubHealth()
+      StubProtocol.routes["/api/trending"] = (200, #"{"items":[{"id":"new","mediaItemId":"m1","source":"trakt_trending","mediaItem":{"id":"m1","mediaType":"movie"}}]}"#)
+      StubProtocol.cancelledPath = path
+      let (engine, _, store) = try makeEngine()
+      let previous = Date(timeIntervalSince1970: 1_700_000_000)
+      try await store.setState(.init(lastSuccessAt: previous, lastStatus: "ok", lastError: nil,
+                                    lastSignalCount: 1, lastMediaCount: 1), at: previous)
+      _ = try await store.upsertSignals([
+        .init(signal: makeSignal(id: "old", mediaItemId: "old", rank: 4), mediaTitle: "旧快照",
+              mediaType: "series", posterURL: nil, firstReleaseDate: nil, match: nil)
+      ], fetchedAt: previous)
+      let result = await engine.syncExternalHeat(whatsnew: makeClient())
+      #expect(result.warning == nil)
+      let state = try await store.state()
+      #expect(state.lastStatus == "ok")
+      #expect(state.lastSuccessAt == previous)
+      #expect(state.lastSignalCount == 1)
+      #expect(try await store.displayRows().map(\.mediaTitle) == ["旧快照"])
+    }
+    reset()
+  }
 
   /// health + trending → 解码、IMDb 直连匹配、事务写库、状态 ok
   @Test func successfulSyncEndToEnd() async throws {

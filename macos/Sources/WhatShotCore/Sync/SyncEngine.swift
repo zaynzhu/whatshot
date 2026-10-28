@@ -600,10 +600,11 @@ public struct SyncEngine: Sendable {
 
   /// 外部热度同步结果（复用 PremiereBackfillSummary 结构：
   /// fetched=信号条数，withDate=匹配到本地条目数，warning=失败摘要）
-  func syncExternalHeat(whatsnew: WhatsNewClient) async -> PremiereBackfillSummary {
+  public func syncExternalHeat(whatsnew: WhatsNewClient) async -> PremiereBackfillSummary {
     let store = ExternalHeatStore(queue: repo.queue)
     do {
       // 1. 服务身份验认：HTML、错误服务或沙箱占位都不算成功
+      try Task.checkCancellation()
       _ = try await whatsnew.fetchHealth()
 
       // 2. trending（无筛选 = 工作中心视图：≤50 部活跃作品及其全部当前信号）
@@ -624,12 +625,15 @@ public struct SyncEngine: Sendable {
       var failedMediaIDs: [String] = []   // 无成功缓存的失败条目：写占位行使轮换冷却
       var detailFailures = 0              // 失败总数（含已有缓存的）：计入 warning
       for mediaID in candidates.prefix(whatsnewDetailBudgetPerRun) {
-        if Task.isCancelled { break }
+        try Task.checkCancellation()
         do {
           let detail = try await whatsnew.fetchMediaDetail(id: mediaID)
           details[mediaID] = detail
           refreshed.append(detail)
         } catch {
+          if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+            throw CancellationError()
+          }
           // 失败记占位（轮换冷却）仅限"无成功缓存"的条目——已有缓存的保留旧值不清，
           // 其旧 fetched_at 会让它下轮自然靠前重试，且不霸占其余预算
           detailFailures += 1
@@ -657,6 +661,7 @@ public struct SyncEngine: Sendable {
 
       // 5. 事务写库（一个成功响应一个事务；不删除本次未返回的行——
       // trending 50 条截断下"未返回"只能解释为范围未覆盖）
+      try Task.checkCancellation()
       let rows = signals.map { signal -> ExternalHeatStore.SignalUpsert in
         let media = signal.mediaItem
         return ExternalHeatStore.SignalUpsert(
@@ -692,6 +697,10 @@ public struct SyncEngine: Sendable {
                                      withDate: matchedCount + lookup.matched,
                                      warning: warnings.isEmpty ? nil : warnings.joined(separator: "；"))
     } catch {
+      // 用户停止或系统取消请求不能推断服务不可达，也不改写上次成功状态。
+      if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+        return PremiereBackfillSummary(fetched: 0, withDate: 0, warning: nil)
+      }
       // 失败保留上次有效缓存（不写库不清行），状态如实记录；只计 warning
       let status: String
       if let whatsnewError = error as? WhatsNewClient.WhatsNewError,
@@ -794,6 +803,9 @@ public struct SyncEngine: Sendable {
       } catch {
         // 404 = 部署的 WhatsNew 版本尚无 lookup 端点：静默降级（部署新版后自动生效），
         // 不作为每轮重复的 warning；其他失败如实 warning
+        if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+          break
+        }
         if let whatsnewError = error as? WhatsNewClient.WhatsNewError,
            whatsnewError.message.contains("HTTP 404") {
           continue

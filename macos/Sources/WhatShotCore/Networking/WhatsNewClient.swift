@@ -8,12 +8,13 @@ public struct WhatsNewClient: Sendable {
   public let baseURL: String
   private let limiter: RateLimiter
   private let session: URLSession
+  private static let sharedLimiter = RateLimiter(interval: 2.0)
 
-  public init(baseURL: String, limiter: RateLimiter = RateLimiter(interval: 2.0), session: URLSession = .shared) {
+  public init(baseURL: String, limiter: RateLimiter? = nil, session: URLSession = .shared) {
     var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
     while base.hasSuffix("/") { base.removeLast() }
     self.baseURL = base
-    self.limiter = limiter
+    self.limiter = limiter ?? Self.sharedLimiter
     self.session = session
   }
 
@@ -94,10 +95,12 @@ public struct WhatsNewClient: Sendable {
   // MARK: - 请求
 
   private func get(_ path: String) async throws -> Data {
+    try Task.checkCancellation()
     guard !baseURL.isEmpty, let url = URL(string: baseURL + path) else {
       throw WhatsNewError(message: "WhatsNew 服务地址无效：\(baseURL)")
     }
     await limiter.waitTurn()
+    try Task.checkCancellation()
     var request = URLRequest(url: url, timeoutInterval: 20)
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     let (data, response) = try await session.data(for: request)
@@ -113,10 +116,12 @@ public struct WhatsNewClient: Sendable {
   /// POST 请求（批量身份查询用）。4xx 时把服务端 error 码附进错误信息——
   /// invalid_body / batch_too_large / unsupported_contract_version / empty_lookup_batch 语义可辨
   private func post(_ path: String, body: Data) async throws -> Data {
+    try Task.checkCancellation()
     guard !baseURL.isEmpty, let url = URL(string: baseURL + path) else {
       throw WhatsNewError(message: "WhatsNew 服务地址无效：\(baseURL)")
     }
     await limiter.waitTurn()
+    try Task.checkCancellation()
     var request = URLRequest(url: url, timeoutInterval: 20)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
