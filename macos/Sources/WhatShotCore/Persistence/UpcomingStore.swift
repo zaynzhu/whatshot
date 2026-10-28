@@ -100,21 +100,22 @@ public struct UpcomingStore: Sendable {
   public func releases(sources: [UpcomingSource], region: String? = nil, kind: String? = nil, window: UpcomingWindow = .future,
                        now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingRelease] {
     guard !sources.isEmpty else { return [] }
-    let today = UpcomingDate.day(now, region: region ?? "CN")
-    let past = UpcomingDate.day(UpcomingDate.calendar(region: region ?? "CN").date(byAdding: .day, value: -14, to: now)!, region: region ?? "CN")
     return try await queue.run { db in
       var conditions = ["active=1", "source IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
-      var values = sources.map(\.rawValue)
+      var values = Self.calendarValues(at: now) + sources.map(\.rawValue)
       if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
       if let kind { conditions.append("kind=?"); values.append(kind) }
       switch window {
-      case .future: conditions.append("release_date>=?"); values.append(today)
+      case .future: conditions.append("release_date>=calendar.today")
       case .undated: conditions.append("release_date IS NULL")
-      case .recent: conditions.append("release_date>=? AND release_date<?"); values += [past, today]
+      case .recent: conditions.append("release_date>=calendar.past AND release_date<calendar.today")
       }
       let order = window == .recent ? "release_date DESC" : "release_date ASC"
       let stmt = try db.prepare("""
-        SELECT payload FROM upcoming_releases WHERE \(conditions.joined(separator: " AND "))
+        WITH calendar(region,today,past) AS (VALUES ('CN',?,?),('US',?,?))
+        SELECT payload FROM upcoming_releases JOIN calendar
+          ON calendar.region=CASE WHEN json_extract(payload,'$.region')='US' THEN 'US' ELSE 'CN' END
+        WHERE \(conditions.joined(separator: " AND "))
         ORDER BY \(order),release_time IS NULL,release_time ASC,title COLLATE NOCASE,id
         LIMIT ? OFFSET ?
         """)
@@ -133,6 +134,14 @@ public struct UpcomingStore: Sendable {
     }
   }
 
+  /// 合并地区时仍按各地区日历筛选；美东仅为美区日期窗口基准，不推测上线时区。
+  private static func calendarValues(at now: Date) -> [String] {
+    ["CN", "US"].flatMap { region in
+      let past = UpcomingDate.calendar(region: region).date(byAdding: .day, value: -14, to: now)!
+      return [UpcomingDate.day(now, region: region), UpcomingDate.day(past, region: region)]
+    }
+  }
+
   private static func validTime(_ value: String) -> Bool {
     let parts = value.split(separator: ":")
     return value.count == 5 && parts.count == 2 && (Int(parts[0]).map { (0...23).contains($0) } ?? false)
@@ -143,34 +152,36 @@ public struct UpcomingStore: Sendable {
   public func works(sources: [UpcomingSource], region: String? = nil, kind: String? = nil, window: UpcomingWindow = .future,
                     now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
     guard !sources.isEmpty else { return [] }
-    let today = UpcomingDate.day(now, region: region ?? "CN")
-    let past = UpcomingDate.day(UpcomingDate.calendar(region: region ?? "CN").date(byAdding: .day, value: -14, to: now)!, region: region ?? "CN")
     return try await queue.run { db in
       var conditions = ["active=1", "source IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
-      var values = sources.map(\.rawValue)
+      var values = Self.calendarValues(at: now) + sources.map(\.rawValue)
       if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
       if let kind { conditions.append("kind=?"); values.append(kind) }
       // 完整标题只折叠首尾空格和大小写，不删除季数、年份、副标题或版本标记。
       // 同平台多个不同 ID 同名说明存在歧义，整组拆开，避免误并重拍作品。
       let dateFilter: String
       switch window {
-      case .future: dateFilter = "anchor>=?"
+      case .future: dateFilter = "anchor>=grouped.today"
       case .undated: dateFilter = "anchor IS NULL"
-      case .recent: dateFilter = "anchor>=? AND anchor<?"
+      case .recent: dateFilter = "anchor>=grouped.past AND anchor<grouped.today"
       }
       let order = window == .recent ? "DESC" : "ASC"
       let stmt = try db.prepare("""
-        WITH base AS (
-          SELECT *, json_array(lower(trim(title)),kind,json_extract(payload,'$.region'),
+        WITH calendar(region,today,past) AS (VALUES ('CN',?,?),('US',?,?)), base AS (
+          SELECT upcoming_releases.*,calendar.today,calendar.past,
+            json_array(lower(trim(title)),kind,json_extract(payload,'$.region'),
             json_extract(payload,'$.releaseType')) AS candidate
-          FROM upcoming_releases WHERE \(conditions.joined(separator: " AND "))
+          FROM upcoming_releases JOIN calendar
+            ON calendar.region=CASE WHEN json_extract(payload,'$.region')='US' THEN 'US' ELSE 'CN' END
+          WHERE \(conditions.joined(separator: " AND "))
         ), ambiguous AS (
           SELECT candidate FROM base GROUP BY candidate,source HAVING COUNT(*)>1
         ), keyed AS (
           SELECT *, CASE WHEN candidate IN (SELECT candidate FROM ambiguous)
             THEN json_array(candidate,id) ELSE candidate END AS work_key FROM base
         ), grouped AS (
-          SELECT work_key, COALESCE(MIN(CASE WHEN release_date>=? THEN release_date END),MAX(release_date)) AS anchor
+          SELECT work_key, MIN(today) AS today, MIN(past) AS past,
+            COALESCE(MIN(CASE WHEN release_date>=today THEN release_date END),MAX(release_date)) AS anchor
           FROM keyed GROUP BY work_key
         ), selected AS (
           SELECT grouped.*, MIN(CASE WHEN keyed.release_date=anchor THEN keyed.release_time END) AS sort_time
@@ -182,12 +193,6 @@ public struct UpcomingStore: Sendable {
           CASE keyed.source WHEN 'youku' THEN 0 WHEN 'iqiyi' THEN 1 ELSE 2 END,keyed.id
         """)
       defer { sqlite3_finalize(stmt) }
-      values.append(today)
-      switch window {
-      case .future: values.append(today)
-      case .undated: break
-      case .recent: values += [past, today]
-      }
       for (index, value) in values.enumerated() { SQLiteDatabase.bind(stmt, Int32(index + 1), value) }
       SQLiteDatabase.bind(stmt, Int32(values.count + 1), max(1, min(limit, 60)))
       SQLiteDatabase.bind(stmt, Int32(values.count + 2), max(0, offset))

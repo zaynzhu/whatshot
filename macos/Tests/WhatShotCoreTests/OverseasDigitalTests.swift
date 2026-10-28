@@ -87,9 +87,67 @@ struct OverseasDigitalTests {
     #expect(us.count == 1 && us[0].releaseDate == "2026-10-27")
     #expect(us[0].releases.count == 1 && us[0].releases[0].region == "US")
     #expect(try await store.works(sources: UpcomingSource.allCases, region: "CN", now: now).count == 1)
+    let combined = try await store.works(sources: UpcomingSource.allCases, now: now)
+    #expect(combined.map(\.releaseDate) == ["2026-10-27", "2026-10-28"])
+    #expect(combined.map { $0.releases.first?.region } == ["US", "CN"])
     try await store.replace([], source: .whenToStream, at: now)
     #expect(try await store.works(sources: UpcomingSource.allCases, region: "US", now: now).isEmpty)
     #expect(try await store.works(sources: UpcomingSource.allCases, region: "CN", now: now).count == 1)
+  }
+
+  private func release(_ source: UpcomingSource, id: String, date: String?) -> UpcomingRelease {
+    UpcomingRelease(source: source, sourceID: id, kind: "movie", title: id,
+      sourceURL: "https://example.com/\(id)", region: source.region,
+      timeZone: source == .whenToStream ? "" : "Asia/Shanghai",
+      releaseType: source == .whenToStream ? "digital" : "platform",
+      releaseDate: date, rawSchedule: "测试排期", observedAt: now)
+  }
+
+  @Test func combinedWindowsUseEachRegionsTodayAndPastBoundary() async throws {
+    let store = UpcomingStore(queue: try DatabaseQueue(path: ":memory:"))
+    try await store.replace([
+      release(.youku, id: "国内过期", date: "2026-10-13"),
+      release(.youku, id: "国内边界", date: "2026-10-14"),
+      release(.youku, id: "国内昨天", date: "2026-10-27"),
+      release(.youku, id: "国内今天", date: "2026-10-28"),
+      release(.youku, id: "国内待定", date: nil)
+    ], source: .youku, at: now)
+    try await store.replace([
+      release(.whenToStream, id: "美国过期", date: "2026-10-12"),
+      release(.whenToStream, id: "美国边界", date: "2026-10-13"),
+      release(.whenToStream, id: "美国昨天", date: "2026-10-26"),
+      release(.whenToStream, id: "美国今天", date: "2026-10-27"),
+      release(.whenToStream, id: "美国待定", date: nil)
+    ], source: .whenToStream, at: now)
+    for (window, titles) in [
+      (UpcomingWindow.future, ["美国今天", "国内今天"]),
+      (.recent, ["国内昨天", "美国昨天", "国内边界", "美国边界"]),
+      (.undated, ["国内待定", "美国待定"])
+    ] {
+      let works = try await store.works(sources: UpcomingSource.allCases, window: window, now: now)
+      let rows = try await store.releases(sources: UpcomingSource.allCases, window: window, now: now)
+      #expect(works.map(\.title) == titles)
+      #expect(rows.map(\.title) == titles)
+    }
+    #expect(try await store.works(sources: [.whenToStream], now: now).map(\.title) == ["美国今天"])
+    #expect(try await store.works(sources: [.youku], now: now).map(\.title) == ["国内今天"])
+  }
+
+  @Test func combinedPaginationGroupsPlatformsBeforePagingAcrossRegions() async throws {
+    let store = UpcomingStore(queue: try DatabaseQueue(path: ":memory:"))
+    for source in [UpcomingSource.youku, .iqiyi, .whenToStream] {
+      try await store.replace((0..<35).map {
+        release(source, id: "电影\(String(format: "%02d", $0))", date: "2026-10-30")
+      }, source: source, at: now)
+    }
+    let first = try await store.works(sources: UpcomingSource.allCases, now: now)
+    let second = try await store.works(sources: UpcomingSource.allCases, now: now, offset: 60)
+    #expect(first.count == 60 && second.count == 10)
+    let all = first + second
+    #expect(Set(all.map(\.id)).count == 70)
+    #expect(all.filter { $0.releases.count == 2 }.count == 35)
+    #expect(all.filter { $0.releases.first?.region == "US" }.count == 35)
+    #expect(first.prefix(2).map { $0.releases.first?.region } == ["CN", "US"])
   }
 
   @Test(.enabled(if: ProcessInfo.processInfo.environment["WHATSHOT_LIVE_OVERSEAS"] == "1"))

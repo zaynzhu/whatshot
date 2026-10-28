@@ -5,7 +5,7 @@ import WhatShotCore
 struct UpcomingTabView: View {
   @Environment(AppModel.self) private var app
   @State private var source = "all"
-  @State private var region = "CN"
+  @State private var region = "all"
   @State private var kind = "all"
   @State private var window: UpcomingWindow = .future
   @State private var rows: [UpcomingWork] = []
@@ -18,12 +18,34 @@ struct UpcomingTabView: View {
   @State private var showSources = false
 
   private var enabled: [UpcomingSource] { app.settings.enabledUpcomingSources }
-  private var regionalSources: [UpcomingSource] { enabled.filter { $0.region == region } }
+  private var regionalSources: [UpcomingSource] { enabled.filter { region == "all" || $0.region == region } }
+  private var selectedRegion: String? { region == "all" ? nil : region }
   private var selectedSources: [UpcomingSource] {
     regionalSources.filter { source == "all" || $0.rawValue == source }
   }
   private var filterKey: String { "\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
   private var queryKey: String { "\(filterKey)|\(app.upcomingRevision)|\(app.queue == nil)" }
+  private var eyebrow: String {
+    switch region {
+    case "CN": "平台排期 · 中国大陆"
+    case "US": "数字发行报道 · 美国"
+    default: "平台排期与数字发行 · 全部地区"
+    }
+  }
+  private var subtitle: String {
+    switch region {
+    case "CN": "按北京时间展示平台公布排期；未知时刻不补零点，排期不保证已可播放。"
+    case "US": "美区数字付费报道，官宣状态未核实；不含预购、订阅与实体碟。保留美国日期，今日按美东日期划分。"
+    default: "国内排期与美区数字发行合并展示，保留各地区日期。国内按北京时间、美区按美东日期筛选；报道标明官宣未核实。"
+    }
+  }
+  private var dateLabel: String {
+    switch region {
+    case "CN": "北京时间"
+    case "US": "美国日期"
+    default: "各地区日期"
+    }
+  }
   private var groups: [String] {
     var keys = Set(rows.map { $0.releaseDate ?? "待定档" }).sorted()
     if window == .recent { keys.reverse() }
@@ -32,9 +54,7 @@ struct UpcomingTabView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      PageHeader(eyebrow: region == "CN" ? "平台排期 · 中国大陆" : "数字发行报道 · 美国", title: "即将上线",
-                 subtitle: region == "CN" ? "按北京时间展示平台公布排期；未知时刻不补零点，排期不保证已可播放。"
-                   : "美区数字付费报道，官宣状态未核实；不含预购、订阅与实体碟。保留美国日期，今日按美东日期划分。") {
+      PageHeader(eyebrow: eyebrow, title: "即将上线", subtitle: subtitle) {
         HStack(spacing: 8) {
           OutlineButton(title: "来源", icon: "slider.horizontal.3") { showSources.toggle() }
             .popover(isPresented: $showSources) { sourceSettings }
@@ -50,6 +70,7 @@ struct UpcomingTabView: View {
 
       HStack(spacing: 12) {
         Picker("地区", selection: $region) {
+          Text("全部地区").tag("all")
           Text("中国大陆").tag("CN")
           Text("美国 · 发行报道").tag("US")
         }.labelsHidden().frame(width: 160)
@@ -103,7 +124,7 @@ struct UpcomingTabView: View {
               VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                   Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                  Text(day == "待定档" ? day : day + (region == "US" ? " · 美国日期" : " · 北京时间"))
+                  Text(day == "待定档" ? day : day + " · " + dateLabel)
                     .font(.system(size: 15, weight: .bold).monospacedDigit())
                   Rectangle().fill(Theme.hairline).frame(height: 1)
                 }
@@ -195,7 +216,7 @@ struct UpcomingTabView: View {
     do {
       let store = UpcomingStore(queue: queue)
       let states = try await store.states()
-      let page = try await store.works(sources: selectedSources, region: region, kind: kind == "all" ? nil : kind, window: window)
+      let page = try await store.works(sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, window: window)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       self.states = states
       rows = page
@@ -214,7 +235,7 @@ struct UpcomingTabView: View {
     loading = true
     do {
       let page = try await UpcomingStore(queue: queue).works(sources: selectedSources,
-        region: region, kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
+        region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       rows += page
       hasMore = page.count == 60
@@ -235,6 +256,10 @@ private struct UpcomingCard: View {
         .foregroundStyle(Theme.textPrimary).lineLimit(2)
       Text(row.kind == "movie" ? "电影" : "剧集")
         .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+      if row.releases.first?.region == "CN" {
+        Text("中国大陆 · 北京时间")
+          .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+      }
       ForEach(row.releases) { release in
         if let url = URL(string: release.sourceURL) {
           Link(destination: url) {
