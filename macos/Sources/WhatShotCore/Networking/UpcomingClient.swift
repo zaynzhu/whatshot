@@ -210,7 +210,7 @@ public struct UpcomingClient: Sendable {
     return Array(result.values)
   }
 
-  // MARK: - 腾讯只确认待播身份，不借作品上映日期
+  // MARK: - 腾讯片库待播身份 + VIP 栏目独立排期
 
   private func fetchTencent() async throws -> [UpcomingRelease] {
     let url = URL(string: "https://pbaccess.video.qq.com/trpc.multi_vector_layout.mvl_controller.MVLPageHTTPService/getMVLPage?vversion_platform=2")!
@@ -252,7 +252,99 @@ public struct UpcomingClient: Sendable {
       }
       guard completed else { throw UpcomingError("腾讯待播超过分页上限，未替换旧片单") }
     }
+    // 两个入口都成功后才交付快照；不能用缺少 VIP 的半份结果清掉旧排期。
+    for row in try await fetchTencentVIP() {
+      guard !result.values.contains(where: { $0.sourceID == row.sourceID && $0.kind != row.kind }) else {
+        throw UpcomingError("腾讯同一作品的分类冲突，已保留上次数据")
+      }
+      result[row.id] = row
+    }
     return Array(result.values)
+  }
+
+  private func fetchTencentVIP() async throws -> [UpcomingRelease] {
+    var context = "new_marklabel=1"
+    var seenContexts: Set<String> = [context]
+    for _ in 1...maxPages {
+      var url = URLComponents(string: "https://film.video.qq.com/x/autovue/film_index/cgi/getModList")!
+      url.queryItems = [
+        URLQueryItem(name: "_param", value: try Self.jsonText(["pageContext": context, "modNum": 5])),
+        URLQueryItem(name: "env", value: "online"),
+        URLQueryItem(name: "_", value: String(Int(Date().timeIntervalSince1970 * 1000)))
+      ]
+      let (data, http) = try await request(url.url!, source: .tencent,
+        headers: ["Referer": "https://film.video.qq.com/"])
+      let response = try Self.object(data)
+      guard (response["code"] as? NSNumber)?.intValue == 0,
+            let payload = response["data"] as? [String: Any],
+            (payload["status"] as? NSNumber)?.intValue == 0,
+            let modules = payload["modList"] as? [[String: Any]] else {
+        throw UpcomingError("腾讯 VIP 栏目响应格式变化")
+      }
+      let upcoming = modules.filter {
+        $0["type"] as? String == "type_58"
+          && ($0["cms_data"] as? [String: Any])?["title"] as? String == "VIP即将上映"
+      }
+      if upcoming.count == 1, let module = upcoming.first {
+        // 页面将整个栏目 list 交给横向列表，没有栏目内续页；首页其他推荐无需继续拉取。
+        return try Self.parseTencentVIP(module, observedAt: Self.observationDate(http))
+      }
+      guard upcoming.isEmpty, !modules.isEmpty, let next = Self.text(payload["pageContext"]),
+            !next.components(separatedBy: "&").contains("page=-1"),
+            seenContexts.insert(next).inserted else {
+        throw UpcomingError("腾讯 VIP 即将上映栏目缺失或分页不完整")
+      }
+      context = next
+    }
+    throw UpcomingError("腾讯 VIP 栏目超过分页上限，未替换旧片单")
+  }
+
+  static func parseTencentVIP(_ module: [String: Any], observedAt: Date) throws -> [UpcomingRelease] {
+    guard module["type"] as? String == "type_58",
+          (module["cms_data"] as? [String: Any])?["title"] as? String == "VIP即将上映",
+          let items = module["list"] as? [[String: Any]], !items.isEmpty else {
+      throw UpcomingError("腾讯 VIP 即将上映栏目结构变化")
+    }
+    var rows: [String: UpcomingRelease] = [:]
+    for item in items {
+      guard let card = item["cms_data"] as? [String: Any], let type = text(card["type"]) else {
+        throw UpcomingError("腾讯 VIP 作品分类缺失")
+      }
+      // 腾讯 1=电影、2=电视剧；3=动漫、10=综艺，不根据标题猜测大类。
+      guard ["1", "2"].contains(type) else { continue }
+      guard let id = identity(card["cid"] ?? item["itemId"]),
+            text(item["itemId"]) == nil || text(item["itemId"]) == id,
+            let title = text(card["title"]), let raw = card["show_date"] as? String else {
+        throw UpcomingError("腾讯 VIP 作品身份或排期字段缺失")
+      }
+      let schedule = try tencentVIPSchedule(raw, isText: text(card["data_type"]) == "text", observedAt: observedAt)
+      let detail = sourceURL(card["web_url"], hostSuffix: "v.qq.com")
+      let row = UpcomingRelease(source: .tencent, sourceID: id, kind: type == "1" ? "movie" : "series", title: title,
+        posterURL: posterURL(card["image_url_vertical"], source: .tencent),
+        sourceURL: detail ?? "https://film.video.qq.com/",
+        releaseDate: schedule.date, releaseTime: schedule.time,
+        rawSchedule: "VIP即将上映 · \(raw.isEmpty ? "敬请期待" : raw)", observedAt: observedAt)
+      if let old = rows[id], old != row { throw UpcomingError("腾讯 VIP 同一作品出现冲突排期") }
+      rows[id] = row
+    }
+    return Array(rows.values)
+  }
+
+  private static func tencentVIPSchedule(_ raw: String, isText: Bool, observedAt: Date) throws -> (date: String?, time: String?) {
+    if isText || raw.isEmpty { return UpcomingDate.parse(raw, observedAt: observedAt) }
+    // 结构化 show_date 是北京时间，严格校验，不能把无法解析的排期当成源已撤回。
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = UpcomingDate.calendar.timeZone
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    formatter.isLenient = false
+    guard let date = formatter.date(from: raw), formatter.string(from: date) == raw else {
+      throw UpcomingError("腾讯 VIP 排期格式变化")
+    }
+    // 腾讯前端将 23:59:59 显示为当日 24:00；统一为次日 00:00，保持相同语义。
+    let value = raw.hasSuffix("23:59:59") ? date.addingTimeInterval(1) : date
+    let parts = UpcomingDate.calendar.dateComponents([.hour, .minute], from: value)
+    return (UpcomingDate.day(value), String(format: "%02d:%02d", parts.hour!, parts.minute!))
   }
 
   static func parseTencentCard(_ card: [String: Any], kind: String, observedAt: Date) throws -> UpcomingRelease {

@@ -83,6 +83,11 @@ public enum UpcomingDate {
       date = day(today)
     } else if text.contains("明天") || text.contains("明日") {
       date = day(calendar.date(byAdding: .day, value: 1, to: today)!)
+    } else if text.contains("后天") {
+      date = day(calendar.date(byAdding: .day, value: 2, to: today)!)
+    } else if let match = captures(#"(?<![0-9])([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])"#, text),
+              MovieReleaseDate.isValid(match[0]) {
+      date = match[0]
     } else if let match = captures(#"(?<![0-9])(?:([0-9]{4})年)?([0-9]{1,2})月([0-9]{1,2})日"#, text) {
       let explicitYear = Int(match[0])
       let month = Int(match[1])!
