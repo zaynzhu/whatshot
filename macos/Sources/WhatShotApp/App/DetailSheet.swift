@@ -11,6 +11,8 @@ struct DetailSheet: View {
   @Environment(AppModel.self) private var app
   @State private var observations: [VideoRepository.ObservationRow] = []
   @State private var watched = false
+  @State private var chartHistory: [ChartHistorySeries] = []
+  @State private var chartHistoryError: String?
   @State private var upcomingReleases: [UpcomingRelease] = []
   /// 外部热度（2026-09-22 WhatsNew 可选接入）：匹配合作品的外部信号
   @State private var externalDetails: [ExternalHeatStore.CachedDetail] = []
@@ -32,11 +34,18 @@ struct DetailSheet: View {
     .frame(width: 620)
     .frame(maxHeight: 600)
     .background(Theme.elevated)
-    .task(id: "\(app.upcomingRevision)|\(app.externalRevision)|\(app.settings.enabledUpcomingSources)|\(app.externalEnabled)") {
+    .task(id: "\(app.upcomingRevision)|\(app.externalRevision)|\(app.settings.enabledUpcomingSources)|\(app.externalEnabled)|\(app.lastSyncFinishedAt?.timeIntervalSince1970 ?? 0)") {
       await loadObservations()
       watched = (try? await repo?.isWatched(videoID: video.id)) ?? false
       await loadExternalSignals()
       if let queue = app.queue {
+        do {
+          chartHistory = try await ChartHistoryStore(queue: queue).history(videoID: video.id, externalEnabled: app.externalEnabled)
+          chartHistoryError = nil
+        } catch {
+          chartHistory = []
+          chartHistoryError = "上榜轨迹读取失败，请重新打开详情"
+        }
         upcomingReleases = (try? await WorkConnectionStore(queue: queue).releases(forVideo: video.id, sources: app.settings.enabledUpcomingSources, externalEnabled: app.externalEnabled)) ?? []
       }
     }
@@ -108,6 +117,14 @@ struct DetailSheet: View {
             dismiss()
             app.openExternal(signal)
           }
+        }
+
+        if !chartHistory.isEmpty {
+          Divider().overlay(Theme.hairline)
+          ChartHistoryView(series: chartHistory)
+        }
+        if let chartHistoryError {
+          Text(chartHistoryError).font(.system(size: 11)).foregroundStyle(Theme.accent)
         }
 
         if !observations.isEmpty {

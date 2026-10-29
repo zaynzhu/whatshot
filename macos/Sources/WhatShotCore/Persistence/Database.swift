@@ -236,6 +236,14 @@ enum Schema {
   CREATE INDEX IF NOT EXISTS idx_ext_heat_video ON external_heat(video_id);
   CREATE INDEX IF NOT EXISTS idx_ext_heat_fetched ON external_heat(fetched_at);
 
+  CREATE TABLE IF NOT EXISTS external_chart_history (
+    media_id TEXT NOT NULL, source TEXT NOT NULL, scope TEXT NOT NULL, window TEXT NOT NULL,
+    entry_key TEXT NOT NULL, region TEXT NOT NULL, entry_label TEXT,
+    captured_at INTEGER NOT NULL, rank INTEGER NOT NULL, fetched_at INTEGER NOT NULL,
+    PRIMARY KEY(media_id,source,scope,window,entry_key,region,captured_at)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ext_chart_history_time ON external_chart_history(captured_at);
+
   CREATE TABLE IF NOT EXISTS external_media_details (
     media_id TEXT PRIMARY KEY,
     detail_json TEXT NOT NULL,

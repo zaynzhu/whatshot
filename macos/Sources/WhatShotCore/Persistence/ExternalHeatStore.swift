@@ -169,6 +169,7 @@ public struct ExternalHeatStore: Sendable {
           throw DatabaseError(message: "外部热度写入失败: \(String(cString: sqlite3_errmsg(db.handle)))")
         }
         sqlite3_reset(stmt)
+        try ChartHistoryStore.record(signal, fetchedAt: fetchedAt, db: db)
         written += 1
       }
       for (mediaID, payload) in detailPayloads {
@@ -184,6 +185,10 @@ public struct ExternalHeatStore: Sendable {
           throw DatabaseError(message: "外部评分缓存写入失败")
         }
       }
+      let cleanup = try db.prepare("DELETE FROM external_chart_history WHERE captured_at < ?")
+      defer { sqlite3_finalize(cleanup) }
+      SQLiteDatabase.bind(cleanup, 1, nowSeconds - 15 * 86400)
+      guard sqlite3_step(cleanup) == SQLITE_DONE else { throw DatabaseError(message: "榜单轨迹清理失败") }
       try db.exec("COMMIT")
       committed = true
       return written
