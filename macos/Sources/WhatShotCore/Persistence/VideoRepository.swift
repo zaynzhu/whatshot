@@ -257,42 +257,10 @@ public struct VideoRepository: Sendable {
   /// query = 本地搜索（定案七）：片名/原名/别名 LIKE，纯本地不触发外部标题搜索
   public func listVideos(kind: ButaiKind, limit: Int, offset: Int,
                          sort: ListSort = .seedUpdated, filter: ListFilter = ListFilter(),
-                         query: String? = nil, now: Date = Date()) async throws -> [VideoRow] {
-    // WHERE 片段构造
-    var conditions: [String] = ["kind = ?"]
-    var binds: [Any?] = [kind.rawValue]
-    if let q = query?.trimmingCharacters(in: .whitespaces), !q.isEmpty {
-      let pattern = "%\(Self.escapeLike(q))%"
-      conditions.append("(title LIKE ? ESCAPE '\\' OR COALESCE(otitle, '') LIKE ? ESCAPE '\\' OR COALESCE(alias, '') LIKE ? ESCAPE '\\')")
-      binds.append(pattern)
-      binds.append(pattern)
-      binds.append(pattern)
-    }
-    if let years = filter.years, let range = Self.yearRange(for: years, now: now) {
-      conditions.append("CAST(COALESCE(years, '0') AS INTEGER) BETWEEN ? AND ?")
-      binds.append(range.low)
-      binds.append(range.high)
-    }
-    switch filter.airing {
-    case .ongoing:
-      conditions.append("episode_status LIKE '更新至%'")
-    case .ended:
-      conditions.append("episode_status LIKE '全集%'") // 空（未知状态）不算已完结
-    case .all:
-      break
-    }
-    if let cls = filter.classNames, !cls.isEmpty {
-      conditions.append("(class_names IS ? OR class_names LIKE ? OR class_names LIKE ? OR class_names LIKE ?)")
-      binds.append(cls as String?)
-      binds.append("\(cls),%")
-      binds.append("%,\(cls),%")
-      binds.append("%,\(cls)")
-    }
-    if let area = filter.area, !area.isEmpty {
-      conditions.append("production_area LIKE ?")
-      binds.append("%\(area)%")
-    }
-    let whereSQL = conditions.joined(separator: " AND ")
+                         query: String? = nil, matchingIDs: Set<Int>? = nil, now: Date = Date()) async throws -> [VideoRow] {
+    let (whereSQL, predicateBinds) = Self.listPredicate(kind: kind, filter: filter, query: query,
+      matchingIDs: matchingIDs, now: now)
+    var binds = predicateBinds
     let orderSQL: String
     switch sort {
     case .seedUpdated:
@@ -344,6 +312,69 @@ public struct VideoRepository: Sendable {
         rows.append(videoRow(stmt, db))
       }
       return rows
+    }
+  }
+
+  /// 列表与数量共享同一条件，避免搜索或分类改变后计数失真。
+  private static func listPredicate(kind: ButaiKind, filter: ListFilter, query: String?,
+                                    matchingIDs: Set<Int>?, now: Date) -> (String, [Any?]) {
+    // WHERE 片段构造
+    var conditions: [String] = ["kind = ?"]
+    var binds: [Any?] = [kind.rawValue]
+    if let q = query?.trimmingCharacters(in: .whitespaces), !q.isEmpty {
+      let pattern = "%\(Self.escapeLike(q))%"
+      conditions.append("(title LIKE ? ESCAPE '\\' OR COALESCE(otitle, '') LIKE ? ESCAPE '\\' OR COALESCE(alias, '') LIKE ? ESCAPE '\\')")
+      binds.append(pattern)
+      binds.append(pattern)
+      binds.append(pattern)
+    }
+    if let years = filter.years, let range = Self.yearRange(for: years, now: now) {
+      conditions.append("CAST(COALESCE(years, '0') AS INTEGER) BETWEEN ? AND ?")
+      binds.append(range.low)
+      binds.append(range.high)
+    }
+    switch filter.airing {
+    case .ongoing:
+      conditions.append("episode_status LIKE '更新至%'")
+    case .ended:
+      conditions.append("episode_status LIKE '全集%'") // 空（未知状态）不算已完结
+    case .all:
+      break
+    }
+    if let cls = filter.classNames, !cls.isEmpty {
+      conditions.append("(class_names IS ? OR class_names LIKE ? OR class_names LIKE ? OR class_names LIKE ?)")
+      binds.append(cls as String?)
+      binds.append("\(cls),%")
+      binds.append("%,\(cls),%")
+      binds.append("%,\(cls)")
+    }
+    if let area = filter.area, !area.isEmpty {
+      conditions.append("production_area LIKE ?")
+      binds.append("%\(area)%")
+    }
+    if let matchingIDs {
+      // ID 集合来自本地 Int 身份；nil 不筛，空集必须匹配零行。
+      conditions.append(matchingIDs.isEmpty ? "0" : "id IN (\(matchingIDs.sorted().map(String.init).joined(separator: ",")))")
+    }
+    return (conditions.joined(separator: " AND "), binds)
+  }
+
+  public func countVideos(kind: ButaiKind, filter: ListFilter = ListFilter(), query: String? = nil,
+                          matchingIDs: Set<Int>? = nil, now: Date = Date()) async throws -> Int {
+    let (whereSQL, binds) = Self.listPredicate(kind: kind, filter: filter, query: query,
+      matchingIDs: matchingIDs, now: now)
+    return try await queue.run { db in
+      let stmt = try db.prepare("SELECT COUNT(*) FROM videos WHERE \(whereSQL)")
+      defer { sqlite3_finalize(stmt) }
+      for (index, value) in binds.enumerated() {
+        if let int = value as? Int {
+          SQLiteDatabase.bind(stmt, Int32(index + 1), int)
+        } else {
+          SQLiteDatabase.bind(stmt, Int32(index + 1), value as? String)
+        }
+      }
+      guard sqlite3_step(stmt) == SQLITE_ROW else { throw DatabaseError(message: "作品计数失败") }
+      return db.int(stmt, 0) ?? 0
     }
   }
 

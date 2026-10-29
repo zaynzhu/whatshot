@@ -29,6 +29,10 @@ struct VideoGridTabView: View {
   @State private var rows: [VideoRepository.VideoRow] = []
   @State private var loading = false
   @State private var page = 0
+  @State private var heatFilter: WorkHeatFilter = .all
+  @State private var heatCounts: [WorkHeatFilter: Int] = [:]
+  @State private var hasMore = true
+  @State private var loadError: String?
   /// 排序：剧集默认首播时间倒序，电影默认新片优先
   @State private var sort: VideoRepository.ListSort
   /// 筛选状态不跨启动持久化（定案 Q9-round1），每次进入默认全量
@@ -49,10 +53,11 @@ struct VideoGridTabView: View {
   private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16, alignment: .top)]
 
   private var sortSubtitle: String {
+    let count = heatCounts[heatFilter].map { "已显示 \(rows.count) / 共 \($0) 部" } ?? "加载中"
     switch sort {
-    case .premiere: return "按首播日期排序 · \(rows.count) 部"
-    case .seedUpdated: return "按站内更新时间排序 · \(rows.count) 部"
-    case .newestYear: return "按上映日期排序 · 缺日期按年份 · \(rows.count) 部"
+    case .premiere: return "按首播日期排序 · \(count)"
+    case .seedUpdated: return "按站内更新时间排序 · \(count)"
+    case .newestYear: return "按上映日期排序 · 缺日期按年份 · \(count)"
     }
   }
 
@@ -86,6 +91,10 @@ struct VideoGridTabView: View {
         .padding(.top, 14)
         .padding(.bottom, 16)
 
+      heatFilterRail
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
+
       headerDivider
 
       if rows.isEmpty && loading {
@@ -104,10 +113,6 @@ struct VideoGridTabView: View {
     .background(Theme.bg)
     .task(id: reloadKey) {
       await reloadFromScratch()
-    }
-    // 同步完成后重载当前列表（与 ChartTabView 同源信号）：集数、海报兜底结果无需切页可见
-    .onChange(of: app.lastSummary) { _, _ in
-      Task { await reloadFromScratch() }
     }
     // ⌘F 聚焦搜索：隐藏按钮只承担快捷键注册
     .background(
@@ -146,6 +151,51 @@ struct VideoGridTabView: View {
         }
       }
       .padding(.horizontal, 20)
+    }
+  }
+
+  private var heatMembership: WorkHeatMembership {
+    WorkHeatMembership(local: app.localChartSignals, external: app.externalRows,
+      externalEnabled: app.externalEnabled)
+  }
+
+  private func heatColor(_ option: WorkHeatFilter) -> Color {
+    option == .local ? Color(red: 1, green: 0.39, blue: 0.24) : Theme.accent
+  }
+
+  private var heatFilterRail: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(WorkHeatFilter.allCases, id: \.self) { option in
+            let selected = heatFilter == option
+            let color = heatColor(option)
+            Button { heatFilter = option } label: {
+              HStack(spacing: 6) {
+                if option != .all {
+                  Image(systemName: option == .shared ? "sparkles" : "flame.fill")
+                }
+                Text(option.rawValue)
+                Text(heatCounts[option].map(String.init) ?? "—")
+                  .monospacedDigit()
+                  .opacity(0.8)
+              }
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(selected ? Theme.bg : Theme.textSecondary)
+              .padding(.horizontal, 12).padding(.vertical, 8)
+              .background(selected ? color : Theme.elevated, in: Capsule())
+              .overlay(Capsule().strokeBorder(selected ? Color.clear : Theme.hairline, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+          }
+        }
+      }
+      Text(app.externalEnabled
+        ? "数量按当前搜索与分类统计 · 共热作品同时计入两类 · 未关联不代表不热门"
+        : "数量按当前搜索与分类统计 · 外部热度未启用")
+        .font(.system(size: 10))
+        .foregroundStyle(Theme.textTertiary)
     }
   }
 
@@ -239,7 +289,21 @@ struct VideoGridTabView: View {
       Image(systemName: kind == .movie ? "film" : "tv")
         .font(.system(size: 34, weight: .light))
         .foregroundStyle(Theme.textTertiary)
-      if !searchQuery.isEmpty {
+      if let loadError {
+        Text("加载失败").font(.system(size: 14, weight: .semibold))
+        Text(loadError).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+        Button("重试") { Task { await reloadFromScratch() } }.buttonStyle(.plain)
+      } else if heatFilter != .all {
+        Text("当前条件下暂无「\(heatFilter.rawValue)」作品")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(Theme.textSecondary)
+        Text((heatFilter == .external || heatFilter == .shared) && !app.externalEnabled
+          ? "可在设置中启用外部热度，再刷新榜单"
+          : "只包含近期有效且已关联的榜单记录 · 可放宽条件或刷新榜单")
+          .font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
+        Button("查看全部热度类型") { heatFilter = .all }
+          .font(.system(size: 11)).foregroundStyle(Theme.accent).buttonStyle(.plain)
+      } else if !searchQuery.isEmpty {
         Text("没有找到「\(searchQuery)」相关作品")
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(Theme.textSecondary)
@@ -282,6 +346,10 @@ struct VideoGridTabView: View {
       .padding(.top, 16)
       .padding(.bottom, 22)
 
+      if loadError != nil && !rows.isEmpty {
+        Button("加载下一页失败 · 重试") { Task { await loadMore() } }
+          .buttonStyle(.plain).foregroundStyle(Theme.accent).padding(.bottom, 16)
+      }
       if loading && !rows.isEmpty {
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
@@ -300,34 +368,71 @@ struct VideoGridTabView: View {
   /// 详情浮层目标（sheet 需要 Identifiable）
   @State private var detailTarget: VideoRepository.VideoRow?
 
-  /// 任务 key：数据库就绪、排序/筛选/搜索变化都整页重载（repo nil→就位翻转让首屏等库就绪再加载）
+  /// 数据库就绪、条件变化与同步完成后统一重载，避免多个入口交错更新列表。
   private var reloadKey: String {
-    "\(app.repo != nil)-\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")-\(searchQuery)"
+    let membership = heatMembership
+    let localIDs = membership.local.sorted().map(String.init).joined(separator: ",")
+    let externalIDs = membership.external.sorted().map(String.init).joined(separator: ",")
+    return "\(app.repo != nil)-\(kind)-\(sort.rawValue)-\(filter.years ?? "-")-\(filter.airing.rawValue)-\(filter.classNames ?? "-")-\(filter.area ?? "-")-\(searchQuery)-\(heatFilter.rawValue)-\(localIDs)-\(externalIDs)-\(app.externalRevision)-\(app.lastSyncFinishedAt?.timeIntervalSince1970 ?? 0)"
   }
 
-  /// 重载代数：同步触发的重载与在途分页请求并发时，旧请求的结果按代数作废，
-  /// 不混入清空后的 rows（.task(id:) 只取消自己启动的任务，管不到 onChange 的 Task）
+  /// 快速切换条件时，旧请求不得写回新列表或解除新请求的加载状态。
   @State private var loadEpoch = 0
 
-  /// 整页重载：回第一页。同步完成后浏览位置回到页首——手动同步本就期待看到新数据
   func reloadFromScratch() async {
     loadEpoch += 1
+    let epoch = loadEpoch
     page = 0
     rows = []
-    await loadMore()
+    heatCounts = [:]
+    hasMore = true
+    loadError = nil
+    loading = true
+    defer { if epoch == loadEpoch { loading = false } }
+    guard let repo = app.repo else { return }
+    let membership = heatMembership
+    let selection = heatFilter
+    let currentFilter = filter
+    let query = searchQuery
+    let currentSort = sort
+    let now = Date()
+    do {
+      var counts: [WorkHeatFilter: Int] = [:]
+      for option in WorkHeatFilter.allCases {
+        try Task.checkCancellation()
+        counts[option] = try await repo.countVideos(kind: kind, filter: currentFilter, query: query,
+          matchingIDs: membership.ids(for: option), now: now)
+      }
+      let first = try await repo.listVideos(kind: kind, limit: pageSize, offset: 0,
+        sort: currentSort, filter: currentFilter, query: query, matchingIDs: membership.ids(for: selection), now: now)
+      guard epoch == loadEpoch, !Task.isCancelled else { return }
+      heatCounts = counts
+      rows = first
+      page = 1
+      hasMore = first.count == pageSize
+    } catch {
+      guard epoch == loadEpoch, !Task.isCancelled else { return }
+      loadError = "未能读取本地片库，请重试"
+    }
   }
 
   func loadMore() async {
-    guard !loading, let repo = app.repo else { return }
-    loading = true
-    defer { loading = false }
+    guard !loading, hasMore, let repo = app.repo else { return }
     let epoch = loadEpoch
-    let next = (try? await repo.listVideos(kind: kind, limit: pageSize, offset: page * pageSize,
-                                           sort: sort, filter: filter,
-                                           query: searchQuery.isEmpty ? nil : searchQuery)) ?? []
-    guard epoch == loadEpoch else { return } // 期间发生过重载，旧页结果丢弃
-    page += 1
-    rows.append(contentsOf: next)
+    loading = true
+    defer { if epoch == loadEpoch { loading = false } }
+    do {
+      let next = try await repo.listVideos(kind: kind, limit: pageSize, offset: page * pageSize,
+        sort: sort, filter: filter, query: searchQuery, matchingIDs: heatMembership.ids(for: heatFilter))
+      guard epoch == loadEpoch, !Task.isCancelled else { return }
+      page += 1
+      rows.append(contentsOf: next)
+      hasMore = next.count == pageSize
+      loadError = nil
+    } catch {
+      guard epoch == loadEpoch, !Task.isCancelled else { return }
+      loadError = "未能加载下一页"
+    }
   }
 }
 
