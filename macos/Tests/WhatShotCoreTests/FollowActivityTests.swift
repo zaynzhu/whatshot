@@ -12,10 +12,15 @@ struct FollowActivityTests {
     let store = UpcomingStore(queue: queue)
     let wants = UpcomingWishlistStore(queue: queue)
     let now = ISO8601DateFormatter().date(from: "2026-10-29T01:00:00Z")!
-    let rows = (1...65).map { helper.release(id: "\($0)", date: "2026-10-29") }
+    let rows = (1...65).map { index in
+      var row = helper.release(id: "\(index)", date: "2026-10-29")
+      row.title = "测试影片\(index)"
+      return row
+    }
     try await store.replace(rows, source: .youku, at: now)
     for row in rows { try await wants.setWanted(helper.work([row]), wanted: true, at: now) }
-    let anotherPlatform = helper.release(.tencent, date: "2026-10-29")
+    var anotherPlatform = helper.release(.tencent, date: "2026-10-29")
+    anotherPlatform.title = rows[0].title
     try await store.replace([anotherPlatform], source: .tencent, at: now)
     try await wants.setWanted(helper.work([rows[0], anotherPlatform]), wanted: true, at: now)
     let us = helper.release(.whenToStream, date: "2026-10-28")

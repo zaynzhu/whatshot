@@ -132,7 +132,7 @@ struct UpcomingTabView: View {
       } else {
         Text(mode == .today ? "关注作品的今日排期 · 各地区自然日 · 排期不代表已可播放" : mode == .week ? "关注作品的本周排期 · 各地区周一至周日 · 到期不代表已可播放"
           : (mode == .changes ? "最近 90 天关注作品的排期变动 · 点击海报查看完整记录"
-            : "已收藏的平台排期 · 包含待定档及移出片单作品 · 来源关闭时隐藏"))
+            : "已关注作品 · 同组其他平台可补充关注 · 保留待定档及移出片单记录"))
           .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
           .padding(.horizontal, 20).padding(.bottom, 12)
       }
@@ -282,9 +282,9 @@ struct UpcomingTabView: View {
       try await app.reloadWishlist()
       let page = try await loadPage(offset: 0)
       let wishlist = UpcomingWishlistStore(queue: queue)
-      let today = try await wishlist.count(mode: .today, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind)
-      let week = try await wishlist.count(mode: .week, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind)
-      let unread = try await wishlist.count(mode: .changes, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, unreadOnly: true)
+      let today = try await wishlist.count(mode: .today, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, externalEnabled: app.externalEnabled)
+      let week = try await wishlist.count(mode: .week, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, externalEnabled: app.externalEnabled)
+      let unread = try await wishlist.count(mode: .changes, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, externalEnabled: app.externalEnabled, unreadOnly: true)
       let changes = try await wishlist.changes(for: page.flatMap(\.releases).map(\.id))
       let inactive = try await wishlist.inactiveIDs(for: page.flatMap(\.releases).map(\.id))
       let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
@@ -313,7 +313,7 @@ struct UpcomingTabView: View {
         region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, externalEnabled: app.externalEnabled, offset: offset)
     }
     return try await UpcomingWishlistStore(queue: queue).works(mode: mode, sources: selectedSources,
-      region: selectedRegion, kind: kind == "all" ? nil : kind, unreadOnly: onlyUnread, offset: offset)
+      region: selectedRegion, kind: kind == "all" ? nil : kind, externalEnabled: app.externalEnabled, unreadOnly: onlyUnread, offset: offset)
   }
 
   @MainActor private func loadMore() async {

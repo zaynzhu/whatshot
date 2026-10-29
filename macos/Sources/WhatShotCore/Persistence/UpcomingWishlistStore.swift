@@ -56,22 +56,8 @@ public struct UpcomingWishlistStore: Sendable {
       defer { if !committed { try? db.exec("ROLLBACK") } }
       let ids = work.releases.map(\.id)
       let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-      let find = try db.prepare("SELECT DISTINCT group_id FROM upcoming_wants WHERE release_id IN (\(placeholders)) ORDER BY group_id")
-      for (i, id) in ids.enumerated() { SQLiteDatabase.bind(find, Int32(i + 1), id) }
-      var groups: [String] = []
-      while sqlite3_step(find) == SQLITE_ROW { if let group = db.text(find, 0) { groups.append(group) } }
-      sqlite3_finalize(find)
       if wanted {
-        let group = groups.first ?? UUID().uuidString
-        // 若当前展示合并了已收藏的平台组，按明确的原站身份合并保存，不按译名猜测。
-        for oldGroup in groups.dropFirst() {
-          let merge = try db.prepare("UPDATE upcoming_wants SET group_id=? WHERE group_id=?")
-          SQLiteDatabase.bind(merge, 1, group)
-          SQLiteDatabase.bind(merge, 2, oldGroup)
-          let status = sqlite3_step(merge)
-          sqlite3_finalize(merge)
-          guard status == SQLITE_DONE else { throw DatabaseError(message: "想看分组合并失败") }
-        }
+        let group = UUID().uuidString
         for release in work.releases {
           let current = try db.prepare("SELECT payload,active FROM upcoming_releases WHERE id=?")
           SQLiteDatabase.bind(current, 1, release.id)
@@ -93,14 +79,10 @@ public struct UpcomingWishlistStore: Sendable {
           guard status == SQLITE_DONE else { throw DatabaseError(message: "保存想看失败") }
         }
       } else {
-        for group in groups {
-          let changes = try db.prepare("DELETE FROM upcoming_want_changes WHERE release_id IN (SELECT release_id FROM upcoming_wants WHERE group_id=?)")
-          SQLiteDatabase.bind(changes, 1, group)
-          let changeStatus = sqlite3_step(changes)
-          sqlite3_finalize(changes)
-          guard changeStatus == SQLITE_DONE else { throw DatabaseError(message: "取消想看失败") }
-          let remove = try db.prepare("DELETE FROM upcoming_wants WHERE group_id=?")
-          SQLiteDatabase.bind(remove, 1, group)
+        // 只操作界面明确列出的原站 ID，旧收藏组不能扩大取消范围。
+        for table in ["upcoming_want_changes", "upcoming_wants"] {
+          let remove = try db.prepare("DELETE FROM \(table) WHERE release_id IN (\(placeholders))")
+          for (i, id) in ids.enumerated() { SQLiteDatabase.bind(remove, Int32(i + 1), id) }
           let status = sqlite3_step(remove)
           sqlite3_finalize(remove)
           guard status == SQLITE_DONE else { throw DatabaseError(message: "取消想看失败") }
@@ -174,27 +156,56 @@ public struct UpcomingWishlistStore: Sendable {
     return (UpcomingDate.day(start, region: region), UpcomingDate.day(end, region: region))
   }
 
+  // 当前片单优先；已移除作品使用收藏快照，不丢失最后排期与原站身份。
+  private static let catalogSQL = """
+    SELECT id AS release_id,payload,active FROM upcoming_releases WHERE active=1
+    UNION ALL
+    SELECT release_id,payload,active FROM upcoming_wants w
+      WHERE NOT EXISTS(SELECT 1 FROM upcoming_releases r WHERE r.id=w.release_id AND r.active=1)
+    """
+
+  private static func groupingJSON(sources: [UpcomingSource], externalEnabled: Bool, db: SQLiteDatabase) throws -> String {
+    let stmt = try db.prepare("SELECT payload FROM (" + catalogSQL + ") WHERE json_extract(payload,'$.source') IN (" + sources.map { _ in "?" }.joined(separator: ",") + ")")
+    defer { sqlite3_finalize(stmt) }
+    for (i, source) in sources.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), source.rawValue) }
+    var rows: [UpcomingRelease] = []
+    while true {
+      let status = sqlite3_step(stmt)
+      if status == SQLITE_DONE { break }
+      guard status == SQLITE_ROW, let payload = db.text(stmt, 0) else { throw DatabaseError(message: "想看归并读取失败") }
+      rows.append(try JSONDecoder().decode(UpcomingRelease.self, from: Data(payload.utf8)))
+    }
+    let connections = try WorkConnectionStore.connections(for: rows, externalEnabled: externalEnabled, db: db)
+    let keys = try UpcomingGrouping.keys(rows: rows, connections: connections)
+    return String(decoding: try JSONEncoder().encode(keys), as: UTF8.self)
+  }
+
   private static func query(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String?,
-                            kind: String?, now: Date, unreadOnly: Bool) -> (sql: String, values: [String], selection: String, ordering: String) {
+                            kind: String?, now: Date, unreadOnly: Bool, groupingJSON: String) -> (sql: String, values: [String], selection: String, ordering: String) {
     var values = ["CN", "US"].flatMap { region in
       let week = Self.weekBounds(at: now, region: region)
       return [UpcomingDate.day(now, region: region), week.start, week.end]
     }
+    values.append(groupingJSON)
     var conditions = ["json_extract(payload,'$.source') IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
     values += sources.map(\.rawValue)
     if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
     if let kind { conditions.append("json_extract(payload,'$.kind')=?"); values.append(kind) }
-    let weekCondition = "active=1 AND json_extract(payload,'$.releaseDate')>=week_start AND json_extract(payload,'$.releaseDate')<week_end"
-    let periodCondition = mode == .today ? "active=1 AND json_extract(payload,'$.releaseDate')=today" : weekCondition
+    let weekCondition = "wanted=1 AND active=1 AND json_extract(payload,'$.releaseDate')>=week_start AND json_extract(payload,'$.releaseDate')<week_end"
+    let periodCondition = mode == .today ? "wanted=1 AND active=1 AND json_extract(payload,'$.releaseDate')=today" : weekCondition
     let anchor = (mode == .week || mode == .today)
       ? "MIN(CASE WHEN \(periodCondition) THEN json_extract(payload,'$.releaseDate') END)"
-      : "COALESCE(MIN(CASE WHEN json_extract(payload,'$.releaseDate')>=today THEN json_extract(payload,'$.releaseDate') END),MAX(json_extract(payload,'$.releaseDate')))"
+      : "COALESCE(MIN(CASE WHEN wanted=1 AND json_extract(payload,'$.releaseDate')>=today THEN json_extract(payload,'$.releaseDate') END),MAX(CASE WHEN wanted=1 THEN json_extract(payload,'$.releaseDate') END))"
     let selection = (mode == .week || mode == .today) ? "anchor IS NOT NULL" : (mode == .changes ? "changed_at IS NOT NULL" : "1")
     let ordering = mode == .changes ? "changed_at DESC,group_id" : "anchor IS NULL,anchor,group_id"
     let sql = """
         WITH calendar(region,today,week_start,week_end) AS (VALUES ('CN',?,?,?),('US',?,?,?)),
+        catalog AS (\(catalogSQL)),
+        work_keys AS (SELECT key AS release_id,value AS group_id FROM json_each(?)),
         base AS (
-          SELECT w.*,today,week_start,week_end FROM upcoming_wants w JOIN calendar
+          SELECT catalog.*,work_keys.group_id,today,week_start,week_end,
+            EXISTS(SELECT 1 FROM upcoming_wants w WHERE w.release_id=catalog.release_id) AS wanted
+          FROM catalog JOIN work_keys USING(release_id) JOIN calendar
             ON calendar.region=CASE WHEN json_extract(payload,'$.region')='US' THEN 'US' ELSE 'CN' END
           WHERE \(conditions.joined(separator: " AND "))
         ), grouped AS (
@@ -202,17 +213,18 @@ public struct UpcomingWishlistStore: Sendable {
             MAX((SELECT MAX(observed_at) FROM upcoming_want_changes c WHERE c.release_id=base.release_id
               AND (\(unreadOnly ? "NOT EXISTS (SELECT 1 FROM upcoming_change_reads r WHERE r.change_id=c.id)" : "1"))
               AND c.observed_at>=\(Int(now.timeIntervalSince1970) - 90 * 86400))) AS changed_at
-          FROM base GROUP BY group_id
+          FROM base GROUP BY group_id HAVING MAX(wanted)=1
         )
       """
     return (sql, values, selection, ordering)
   }
 
   public func works(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String? = nil,
-                    kind: String? = nil, now: Date = .now, unreadOnly: Bool = false, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
+                    kind: String? = nil, externalEnabled: Bool = false, now: Date = .now, unreadOnly: Bool = false, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
     guard !sources.isEmpty else { return [] }
     return try await queue.run { db in
-      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly)
+      let keys = try Self.groupingJSON(sources: sources, externalEnabled: externalEnabled, db: db)
+      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly, groupingJSON: keys)
       let values = query.values
       let stmt = try db.prepare("""
         \(query.sql), selected AS (
@@ -240,10 +252,11 @@ public struct UpcomingWishlistStore: Sendable {
 
   /// 计数与列表使用同一分组查询，按作品统计且不受分页截断。
   public func count(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String? = nil,
-                    kind: String? = nil, now: Date = .now, unreadOnly: Bool = false) async throws -> Int {
+                    kind: String? = nil, externalEnabled: Bool = false, now: Date = .now, unreadOnly: Bool = false) async throws -> Int {
     guard !sources.isEmpty else { return 0 }
     return try await queue.run { db in
-      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly)
+      let keys = try Self.groupingJSON(sources: sources, externalEnabled: externalEnabled, db: db)
+      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly, groupingJSON: keys)
       let stmt = try db.prepare(query.sql + " SELECT COUNT(*) FROM grouped WHERE " + query.selection)
       defer { sqlite3_finalize(stmt) }
       for (i, value) in query.values.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), value) }

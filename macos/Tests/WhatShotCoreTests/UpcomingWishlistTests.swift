@@ -113,7 +113,7 @@ struct UpcomingWishlistTests {
     #expect(try await reopened.works(mode: .week, sources: [.whenToStream], now: boundary).count == 1)
     #expect(try await reopened.works(mode: .week, sources: [.youku], now: boundary).isEmpty)
     try await reopened.setWanted(work([a]), wanted: false)
-    #expect(try await reopened.savedIDs() == [us.id])
+    #expect(try await reopened.savedIDs() == [b.id, us.id])
   }
 
   @Test func paginationCountsSavedWorksNotPlatformRows() async throws {

@@ -40,7 +40,9 @@ public final class AppModel {
 
   func setWanted(_ work: UpcomingWork, wanted: Bool) async throws {
     guard let queue else { return }
-    try await UpcomingWishlistStore(queue: queue).setWanted(work, wanted: wanted)
+    let visible = work.releases.filter { settings.enabledUpcomingSources.contains($0.source) }
+    let target = UpcomingWork(id: work.id, releaseDate: work.releaseDate, releases: visible)
+    try await UpcomingWishlistStore(queue: queue).setWanted(target, wanted: wanted)
     try await reloadWishlist()
     wishlistRevision += 1
   }
