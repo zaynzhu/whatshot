@@ -7,6 +7,9 @@ struct UpcomingTabView: View {
   @State private var source = "all"
   @State private var region = "all"
   @State private var kind = "all"
+  @State private var mode: UpcomingBrowseMode = .all
+  @State private var changes: [UpcomingWantChange] = []
+  @State private var inactiveIDs = Set<String>()
   @State private var window: UpcomingWindow = .future
   @State private var rows: [UpcomingWork] = []
   @State private var states: [UpcomingSourceState] = []
@@ -25,8 +28,8 @@ struct UpcomingTabView: View {
   private var selectedSources: [UpcomingSource] {
     regionalSources.filter { source == "all" || $0.rawValue == source }
   }
-  private var filterKey: String { "\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
-  private var queryKey: String { "\(filterKey)|\(app.upcomingRevision)|\(app.externalRevision)|\(app.externalEnabled)|\(app.queue == nil)" }
+  private var filterKey: String { "\(mode.rawValue)|\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
+  private var queryKey: String { "\(filterKey)|\(app.wishlistRevision)|\(app.upcomingRevision)|\(app.externalRevision)|\(app.externalEnabled)|\(app.queue == nil)" }
   private var eyebrow: String {
     switch region {
     case "CN": "平台排期 · 中国大陆"
@@ -48,9 +51,17 @@ struct UpcomingTabView: View {
     default: "各地区日期"
     }
   }
+  private func groupDay(_ work: UpcomingWork) -> String {
+    if mode == .changes {
+      let ids = Set(work.releases.map(\.id))
+      return changes.first { ids.contains($0.releaseID) }.map { UpcomingDate.day($0.observedAt) } ?? "较早变动"
+    }
+    return work.releaseDate ?? "待定档"
+  }
+
   private var groups: [String] {
-    var keys = Set(rows.map { $0.releaseDate ?? "待定档" }).sorted()
-    if window == .recent { keys.reverse() }
+    var keys = Set(rows.map(groupDay)).sorted()
+    if mode == .changes || (mode == .all && window == .recent) { keys.reverse() }
     return keys
   }
 
@@ -92,11 +103,23 @@ struct UpcomingTabView: View {
       }
       .padding(.horizontal, 20)
       .padding(.bottom, 12)
-      Picker("排期范围", selection: $window) {
-        ForEach(UpcomingWindow.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+      Picker("浏览范围", selection: $mode) {
+        ForEach(UpcomingBrowseMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
       }.labelsHidden().pickerStyle(.segmented)
-        .frame(maxWidth: 360).padding(.horizontal, 20).padding(.bottom, 12)
+        .frame(maxWidth: 440).padding(.horizontal, 20).padding(.bottom, 12)
 
+      if mode == .all {
+        Picker("排期范围", selection: $window) {
+          ForEach(UpcomingWindow.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }.labelsHidden().pickerStyle(.segmented)
+          .frame(maxWidth: 360).padding(.horizontal, 20).padding(.bottom, 12)
+      } else {
+        Text(mode == .week ? "关注作品的本周排期 · 各地区周一至周日 · 到期不代表已可播放"
+          : (mode == .changes ? "最近 90 天关注作品的排期变动 · 点击海报查看完整记录"
+            : "已收藏的平台排期 · 包含待定档及移出片单作品 · 来源关闭时隐藏"))
+          .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
+          .padding(.horizontal, 20).padding(.bottom, 12)
+      }
       if app.syncingUpcoming {
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
@@ -129,14 +152,15 @@ struct UpcomingTabView: View {
               VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                   Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                  Text(day == "待定档" ? day : day + " · " + dateLabel)
+                  Text(day == "待定档" ? day : day + " · " + (mode == .changes ? "本地发现日期" : dateLabel))
                     .font(.system(size: 15, weight: .bold).monospacedDigit())
                   Rectangle().fill(Theme.hairline).frame(height: 1)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16, alignment: .top)], spacing: 18) {
-                  ForEach(rows.filter { ($0.releaseDate ?? "待定档") == day }) { row in
+                  ForEach(rows.filter { groupDay($0) == day }) { row in
                     let connection = WorkConnection.combined(row.releases.compactMap { connections[$0.id] })
-                    UpcomingCard(row: row, connection: connection) { detailTarget = row }
+                    UpcomingCard(row: row, connection: connection, inactiveIDs: inactiveIDs,
+                      change: changes.first { change in row.releases.contains { $0.id == change.releaseID } }) { detailTarget = row }
                   }
                 }
               }
@@ -206,11 +230,15 @@ struct UpcomingTabView: View {
 
   private var emptyTitle: String {
     if selectedSources.isEmpty { return "此地区的待播来源未开启" }
+    if mode == .wanted { return "还没有符合条件的想看作品" }
+    if mode == .week { return "本周暂无已公布排期的想看作品" }
+    if mode == .changes { return "关注后尚未发现排期变动" }
     if states.filter({ selectedSources.contains($0.source) }).allSatisfy({ $0.lastSuccessAt == nil }) { return "尚无待播快照" }
     return window == .undated ? "此筛选下没有待定档作品" : "此筛选下暂无已公布日期的作品"
   }
   private var emptyDetail: String {
     if selectedSources.isEmpty { return "点击「来源」开启此地区的数据源，再刷新排期。" }
+    if mode != .all { return "可在全部片单中点「想看」收藏；变动只在关注后成功刷新时记录。来源与地区筛选仍生效。" }
     if window == .future { return "可以刷新排期，或切换「待定档」查看尚未公布日期的片单。" }
     if window == .recent { return "这里只展示过去 14 天的排期，不代表已经可以播放。" }
     return "公开片单随平台公告更新，未公布的日期与时刻不会推测补齐。"
@@ -226,10 +254,16 @@ struct UpcomingTabView: View {
     do {
       let store = UpcomingStore(queue: queue)
       let states = try await store.states()
-      let page = try await store.works(sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, window: window)
+      try await app.reloadWishlist()
+      let page = try await loadPage(offset: 0)
+      let wishlist = UpcomingWishlistStore(queue: queue)
+      let changes = try await wishlist.changes(for: page.flatMap(\.releases).map(\.id))
+      let inactive = try await wishlist.inactiveIDs(for: page.flatMap(\.releases).map(\.id))
       let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       connections = linked
+      self.changes = changes
+      inactiveIDs = inactive
       self.states = states
       rows = page
       hasMore = page.count == 60
@@ -241,16 +275,30 @@ struct UpcomingTabView: View {
     if generation == queryGeneration { loading = false }
   }
 
+  @MainActor private func loadPage(offset: Int) async throws -> [UpcomingWork] {
+    guard let queue = app.queue else { return [] }
+    if mode == .all {
+      return try await UpcomingStore(queue: queue).works(sources: selectedSources,
+        region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: offset)
+    }
+    return try await UpcomingWishlistStore(queue: queue).works(mode: mode, sources: selectedSources,
+      region: selectedRegion, kind: kind == "all" ? nil : kind, offset: offset)
+  }
+
   @MainActor private func loadMore() async {
     guard !loading, let queue = app.queue else { return }
     let generation = queryGeneration
     loading = true
     do {
-      let page = try await UpcomingStore(queue: queue).works(sources: selectedSources,
-        region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: rows.count)
+      let page = try await loadPage(offset: rows.count)
+      let wishlist = UpcomingWishlistStore(queue: queue)
+      let changes = try await wishlist.changes(for: page.flatMap(\.releases).map(\.id))
+      let inactive = try await wishlist.inactiveIDs(for: page.flatMap(\.releases).map(\.id))
       let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
       guard !Task.isCancelled, generation == queryGeneration else { return }
       connections.merge(linked) { _, new in new }
+      self.changes += changes
+      inactiveIDs.formUnion(inactive)
       rows += page
       hasMore = page.count == 60
       readError = nil
@@ -264,6 +312,8 @@ struct UpcomingTabView: View {
 private struct UpcomingCard: View {
   let row: UpcomingWork
   let connection: WorkConnection
+  let inactiveIDs: Set<String>
+  let change: UpcomingWantChange?
   let open: () -> Void
   @Environment(AppModel.self) private var app
   var body: some View {
@@ -278,6 +328,12 @@ private struct UpcomingCard: View {
       }.buttonStyle(.plain)
       if let title = connection.chineseTitle, title != row.title {
         Text(row.title).font(.system(size: 10)).foregroundStyle(Theme.textTertiary).lineLimit(2)
+      }
+      UpcomingWantButton(work: row)
+      if let change {
+        Text(change.before.source.title + " · " + change.reason)
+          .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent)
+        Text(change.summary).font(.system(size: 10)).foregroundStyle(Theme.textSecondary).lineLimit(3)
       }
       ExternalSignalBadge(signals: app.signals(for: connection))
       Text(row.kind == "movie" ? "电影" : "剧集")
@@ -298,11 +354,15 @@ private struct UpcomingCard: View {
               Text(release.releaseDate.map { $0 + " · " + release.timeText } ?? "待定档")
                 .monospacedDigit()
                 .foregroundStyle(release.releaseTime == nil ? Theme.textSecondary : Theme.accent)
+              if inactiveIDs.contains(release.id) {
+                Text("已移出片单 · 保留上次排期").foregroundStyle(Theme.accent)
+                Text("是否上线未确认").foregroundStyle(Theme.textTertiary)
+              }
               if release.source == .whenToStream {
                 Text("美国 · 数字付费 · 报道排期").foregroundStyle(Theme.textTertiary)
                 Text("官宣状态未核实").foregroundStyle(Theme.textTertiary)
               }
-              if release.sourceReportsAvailable {
+              if release.sourceReportsAvailable && !inactiveIDs.contains(release.id) {
                 Text("来源标记已上线").foregroundStyle(Theme.accent)
               }
             }

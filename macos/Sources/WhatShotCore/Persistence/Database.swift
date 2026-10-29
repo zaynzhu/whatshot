@@ -191,6 +191,18 @@ enum Schema {
   CREATE INDEX IF NOT EXISTS idx_upcoming_date ON upcoming_releases(active, release_date, release_time, id);
   CREATE INDEX IF NOT EXISTS idx_upcoming_source ON upcoming_releases(source, active);
 
+  CREATE TABLE IF NOT EXISTS upcoming_wants (
+    release_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, payload TEXT NOT NULL,
+    active INTEGER NOT NULL, added_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_upcoming_wants_group ON upcoming_wants(group_id);
+  CREATE TABLE IF NOT EXISTS upcoming_want_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, release_id TEXT NOT NULL,
+    reason TEXT NOT NULL, before_payload TEXT NOT NULL, after_payload TEXT,
+    observed_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_upcoming_want_changes_release ON upcoming_want_changes(release_id,observed_at);
+
   CREATE TABLE IF NOT EXISTS upcoming_source_state (
     source TEXT PRIMARY KEY,
     last_attempt_at INTEGER,

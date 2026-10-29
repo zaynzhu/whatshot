@@ -30,6 +30,20 @@ public final class AppModel {
   public private(set) var upcomingPhase: String?
   public private(set) var upcomingError: String?
   public private(set) var upcomingRevision = 0
+  private(set) var wantedReleaseIDs = Set<String>()
+  private(set) var wishlistRevision = 0
+
+  func reloadWishlist() async throws {
+    guard let queue else { return }
+    wantedReleaseIDs = try await UpcomingWishlistStore(queue: queue).savedIDs()
+  }
+
+  func setWanted(_ work: UpcomingWork, wanted: Bool) async throws {
+    guard let queue else { return }
+    try await UpcomingWishlistStore(queue: queue).setWanted(work, wanted: wanted)
+    try await reloadWishlist()
+    wishlistRevision += 1
+  }
   var externalRows: [ExternalHeatStore.DisplayRow] = []
   private(set) var localChartSignals: [Int: [LocalChartSignal]] = [:]
   var externalRevision = 0
@@ -130,6 +144,7 @@ public final class AppModel {
       try await newRepo.normalizeMovieReleaseDates()
       queue = newQueue
       repo = newRepo
+      try await reloadWishlist()
       await reloadLocalCharts()
       await reloadExternalRows()
       try await repo?.recoverInterruptedRuns(at: Date())

@@ -21,6 +21,7 @@ public struct UpcomingStore: Sendable {
       try db.exec("BEGIN IMMEDIATE")
       var committed = false
       defer { if !committed { try? db.exec("ROLLBACK") } }
+      try UpcomingWishlistStore.recordSnapshot(rows, source: source, at: now, db: db)
       let mark = try db.prepare("UPDATE upcoming_releases SET active=0, removed_at=COALESCE(removed_at,?) WHERE source=?")
       defer { sqlite3_finalize(mark) }
       SQLiteDatabase.bind(mark, 1, stamp)
