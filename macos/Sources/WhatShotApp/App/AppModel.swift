@@ -341,8 +341,8 @@ public final class AppModel {
   }
 
   /// 进入追剧页即视为已读：展示当前明细后推进水位
-  func markWatchlistViewed() {
-    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "watchlist.lastViewed")
+  func markWatchlistViewed(at date: Date = .now) {
+    UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "watchlist.lastViewed")
     watchlistUnread = 0
   }
 

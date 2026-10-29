@@ -8,6 +8,12 @@ struct UpcomingTabView: View {
   @State private var region = "all"
   @State private var kind = "all"
   @State private var mode: UpcomingBrowseMode = .all
+  @State private var onlyUnread = false
+  @State private var todayCount = 0
+  @State private var weekCount = 0
+  @State private var unreadCount = 0
+  @Environment(\.scenePhase) private var scenePhase
+  @State private var calendarRevision = 0
   @State private var changes: [UpcomingWantChange] = []
   @State private var inactiveIDs = Set<String>()
   @State private var window: UpcomingWindow = .future
@@ -28,8 +34,8 @@ struct UpcomingTabView: View {
   private var selectedSources: [UpcomingSource] {
     regionalSources.filter { source == "all" || $0.rawValue == source }
   }
-  private var filterKey: String { "\(mode.rawValue)|\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
-  private var queryKey: String { "\(filterKey)|\(app.wishlistRevision)|\(app.upcomingRevision)|\(app.externalRevision)|\(app.externalEnabled)|\(app.queue == nil)" }
+  private var filterKey: String { "\(mode.rawValue)|\(onlyUnread)|\(region)|\(source)|\(kind)|\(window.rawValue)|\(enabled.map(\.rawValue).joined())" }
+  private var queryKey: String { "\(calendarRevision)|\(filterKey)|\(app.wishlistRevision)|\(app.upcomingRevision)|\(app.externalRevision)|\(app.externalEnabled)|\(app.queue == nil)" }
   private var eyebrow: String {
     switch region {
     case "CN": "平台排期 · 中国大陆"
@@ -103,10 +109,20 @@ struct UpcomingTabView: View {
       }
       .padding(.horizontal, 20)
       .padding(.bottom, 12)
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 10) {
+          ActivityShortcut(title: "今日想看排期", count: todayCount, icon: "calendar", selected: mode == .today) { mode = .today }
+          ActivityShortcut(title: "本周想看", count: weekCount, icon: "calendar.badge.clock", selected: mode == .week) { mode = .week }
+          ActivityShortcut(title: "未读变动", count: unreadCount, icon: "bell.badge", selected: mode == .changes && onlyUnread) {
+            onlyUnread = true
+            mode = .changes
+          }
+        }
+      }.padding(.horizontal, 20).padding(.bottom, 12)
       Picker("浏览范围", selection: $mode) {
         ForEach(UpcomingBrowseMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
       }.labelsHidden().pickerStyle(.segmented)
-        .frame(maxWidth: 440).padding(.horizontal, 20).padding(.bottom, 12)
+        .frame(maxWidth: 540).padding(.horizontal, 20).padding(.bottom, 12)
 
       if mode == .all {
         Picker("排期范围", selection: $window) {
@@ -114,11 +130,15 @@ struct UpcomingTabView: View {
         }.labelsHidden().pickerStyle(.segmented)
           .frame(maxWidth: 360).padding(.horizontal, 20).padding(.bottom, 12)
       } else {
-        Text(mode == .week ? "关注作品的本周排期 · 各地区周一至周日 · 到期不代表已可播放"
+        Text(mode == .today ? "关注作品的今日排期 · 各地区自然日 · 排期不代表已可播放" : mode == .week ? "关注作品的本周排期 · 各地区周一至周日 · 到期不代表已可播放"
           : (mode == .changes ? "最近 90 天关注作品的排期变动 · 点击海报查看完整记录"
             : "已收藏的平台排期 · 包含待定档及移出片单作品 · 来源关闭时隐藏"))
           .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
           .padding(.horizontal, 20).padding(.bottom, 12)
+      }
+      if mode == .changes {
+        Toggle("只看未读变动", isOn: $onlyUnread).toggleStyle(.checkbox)
+          .font(.system(size: 11)).padding(.horizontal, 20).padding(.bottom, 10)
       }
       if app.syncingUpcoming {
         HStack(spacing: 8) {
@@ -180,10 +200,13 @@ struct UpcomingTabView: View {
       }
     }
     .background(Theme.bg)
-    .sheet(item: $detailTarget) { row in
+    .sheet(item: $detailTarget, onDismiss: { Task { await reload() } }) { row in
       UpcomingDetailSheet(row: row, connection: WorkConnection.combined(row.releases.compactMap { connections[$0.id] }))
     }
     .task(id: queryKey) { await reload() }
+    .onChange(of: scenePhase) { _, phase in
+      if phase == .active { calendarRevision += 1 }
+    }
     .onChange(of: region) { _, _ in source = "all"; kind = "all" }
     .onChange(of: enabled) { _, value in
       if source != "all", !value.contains(where: { $0.rawValue == source }) { source = "all" }
@@ -231,6 +254,8 @@ struct UpcomingTabView: View {
   private var emptyTitle: String {
     if selectedSources.isEmpty { return "此地区的待播来源未开启" }
     if mode == .wanted { return "还没有符合条件的想看作品" }
+    if mode == .today { return "今天暂无已公布排期的想看作品" }
+    if mode == .changes && onlyUnread { return "没有未读排期变动" }
     if mode == .week { return "本周暂无已公布排期的想看作品" }
     if mode == .changes { return "关注后尚未发现排期变动" }
     if states.filter({ selectedSources.contains($0.source) }).allSatisfy({ $0.lastSuccessAt == nil }) { return "尚无待播快照" }
@@ -257,10 +282,16 @@ struct UpcomingTabView: View {
       try await app.reloadWishlist()
       let page = try await loadPage(offset: 0)
       let wishlist = UpcomingWishlistStore(queue: queue)
+      let today = try await wishlist.count(mode: .today, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind)
+      let week = try await wishlist.count(mode: .week, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind)
+      let unread = try await wishlist.count(mode: .changes, sources: selectedSources, region: selectedRegion, kind: kind == "all" ? nil : kind, unreadOnly: true)
       let changes = try await wishlist.changes(for: page.flatMap(\.releases).map(\.id))
       let inactive = try await wishlist.inactiveIDs(for: page.flatMap(\.releases).map(\.id))
       let linked = try await WorkConnectionStore(queue: queue).connections(for: page.flatMap(\.releases), externalEnabled: app.externalEnabled)
       guard !Task.isCancelled, generation == queryGeneration else { return }
+      todayCount = today
+      weekCount = week
+      unreadCount = unread
       connections = linked
       self.changes = changes
       inactiveIDs = inactive
@@ -282,7 +313,7 @@ struct UpcomingTabView: View {
         region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: offset)
     }
     return try await UpcomingWishlistStore(queue: queue).works(mode: mode, sources: selectedSources,
-      region: selectedRegion, kind: kind == "all" ? nil : kind, offset: offset)
+      region: selectedRegion, kind: kind == "all" ? nil : kind, unreadOnly: onlyUnread, offset: offset)
   }
 
   @MainActor private func loadMore() async {
@@ -315,11 +346,12 @@ private struct UpcomingCard: View {
   let inactiveIDs: Set<String>
   let change: UpcomingWantChange?
   let open: () -> Void
+  private var localCharts: [LocalChartSignal] { connection.videoID.flatMap { app.localChartSignals[$0] } ?? [] }
   @Environment(AppModel.self) private var app
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       Button(action: open) {
-        SignalPoster(url: row.posterURL, signals: app.signals(for: connection)).id(row.posterURL)
+        SignalPoster(url: row.posterURL, signals: app.signals(for: connection), localCharts: localCharts).id(row.posterURL)
       }.buttonStyle(.plain).help("查看作品排期与外部榜单")
         .accessibilityLabel("查看\(connection.chineseTitle ?? row.title)详情")
       Button(action: open) {
@@ -331,11 +363,12 @@ private struct UpcomingCard: View {
       }
       UpcomingWantButton(work: row)
       if let change {
-        Text(change.before.source.title + " · " + change.reason)
+        Text((change.isRead ? "" : "未读 · ") + change.before.source.title + " · " + change.label)
           .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent)
         Text(change.summary).font(.system(size: 10)).foregroundStyle(Theme.textSecondary).lineLimit(3)
       }
-      ExternalSignalBadge(signals: app.signals(for: connection))
+      WorkChartBadge(local: localCharts, external: app.signals(for: connection), prefix:
+        row.releases.contains(where: { app.wantedReleaseIDs.contains($0.id) }) && WorkHeatTier.resolve(local: localCharts, external: app.signals(for: connection)) != .none ? "想看 · " : "")
       Text(row.kind == "movie" ? "电影" : "剧集")
         .font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
       if row.releases.first?.region == "CN" {

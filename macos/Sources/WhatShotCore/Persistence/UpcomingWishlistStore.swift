@@ -5,6 +5,7 @@ public enum UpcomingBrowseMode: String, Sendable, CaseIterable {
   case all = "全部片单"
   case wanted = "我的想看"
   case week = "本周想看"
+  case today = "今日想看"
   case changes = "排期变动"
 }
 
@@ -15,6 +16,15 @@ public struct UpcomingWantChange: Sendable, Identifiable {
   public let before: UpcomingRelease
   public let after: UpcomingRelease?
   public let observedAt: Date
+  public let isRead: Bool
+  public var label: String {
+    guard let after, let oldDate = before.releaseDate, let newDate = after.releaseDate else { return reason }
+    if oldDate != newDate { return newDate < oldDate ? "提前上线" : "延期上线" }
+    if let oldTime = before.releaseTime, let newTime = after.releaseTime, oldTime != newTime {
+      return newTime < oldTime ? "时刻提前" : "时刻推迟"
+    }
+    return reason
+  }
   public var summary: String {
     func schedule(_ row: UpcomingRelease) -> String {
       row.releaseDate.map { $0 + " " + row.timeText } ?? "待定档"
@@ -164,25 +174,24 @@ public struct UpcomingWishlistStore: Sendable {
     return (UpcomingDate.day(start, region: region), UpcomingDate.day(end, region: region))
   }
 
-  public func works(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String? = nil,
-                    kind: String? = nil, now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
-    guard !sources.isEmpty else { return [] }
-    return try await queue.run { db in
-      var values = ["CN", "US"].flatMap { region in
-        let week = Self.weekBounds(at: now, region: region)
-        return [UpcomingDate.day(now, region: region), week.start, week.end]
-      }
-      var conditions = ["json_extract(payload,'$.source') IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
-      values += sources.map(\.rawValue)
-      if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
-      if let kind { conditions.append("json_extract(payload,'$.kind')=?"); values.append(kind) }
-      let weekCondition = "active=1 AND json_extract(payload,'$.releaseDate')>=week_start AND json_extract(payload,'$.releaseDate')<week_end"
-      let anchor = mode == .week
-        ? "MIN(CASE WHEN \(weekCondition) THEN json_extract(payload,'$.releaseDate') END)"
-        : "COALESCE(MIN(CASE WHEN json_extract(payload,'$.releaseDate')>=today THEN json_extract(payload,'$.releaseDate') END),MAX(json_extract(payload,'$.releaseDate')))"
-      let selection = mode == .week ? "anchor IS NOT NULL" : (mode == .changes ? "changed_at IS NOT NULL" : "1")
-      let ordering = mode == .changes ? "changed_at DESC,group_id" : "anchor IS NULL,anchor,group_id"
-      let stmt = try db.prepare("""
+  private static func query(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String?,
+                            kind: String?, now: Date, unreadOnly: Bool) -> (sql: String, values: [String], selection: String, ordering: String) {
+    var values = ["CN", "US"].flatMap { region in
+      let week = Self.weekBounds(at: now, region: region)
+      return [UpcomingDate.day(now, region: region), week.start, week.end]
+    }
+    var conditions = ["json_extract(payload,'$.source') IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
+    values += sources.map(\.rawValue)
+    if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
+    if let kind { conditions.append("json_extract(payload,'$.kind')=?"); values.append(kind) }
+    let weekCondition = "active=1 AND json_extract(payload,'$.releaseDate')>=week_start AND json_extract(payload,'$.releaseDate')<week_end"
+    let periodCondition = mode == .today ? "active=1 AND json_extract(payload,'$.releaseDate')=today" : weekCondition
+    let anchor = (mode == .week || mode == .today)
+      ? "MIN(CASE WHEN \(periodCondition) THEN json_extract(payload,'$.releaseDate') END)"
+      : "COALESCE(MIN(CASE WHEN json_extract(payload,'$.releaseDate')>=today THEN json_extract(payload,'$.releaseDate') END),MAX(json_extract(payload,'$.releaseDate')))"
+    let selection = (mode == .week || mode == .today) ? "anchor IS NOT NULL" : (mode == .changes ? "changed_at IS NOT NULL" : "1")
+    let ordering = mode == .changes ? "changed_at DESC,group_id" : "anchor IS NULL,anchor,group_id"
+    let sql = """
         WITH calendar(region,today,week_start,week_end) AS (VALUES ('CN',?,?,?),('US',?,?,?)),
         base AS (
           SELECT w.*,today,week_start,week_end FROM upcoming_wants w JOIN calendar
@@ -191,10 +200,23 @@ public struct UpcomingWishlistStore: Sendable {
         ), grouped AS (
           SELECT group_id,\(anchor) AS anchor,
             MAX((SELECT MAX(observed_at) FROM upcoming_want_changes c WHERE c.release_id=base.release_id
+              AND (\(unreadOnly ? "NOT EXISTS (SELECT 1 FROM upcoming_change_reads r WHERE r.change_id=c.id)" : "1"))
               AND c.observed_at>=\(Int(now.timeIntervalSince1970) - 90 * 86400))) AS changed_at
           FROM base GROUP BY group_id
-        ), selected AS (
-          SELECT * FROM grouped WHERE \(selection) ORDER BY \(ordering) LIMIT ? OFFSET ?
+        )
+      """
+    return (sql, values, selection, ordering)
+  }
+
+  public func works(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String? = nil,
+                    kind: String? = nil, now: Date = .now, unreadOnly: Bool = false, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
+    guard !sources.isEmpty else { return [] }
+    return try await queue.run { db in
+      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly)
+      let values = query.values
+      let stmt = try db.prepare("""
+        \(query.sql), selected AS (
+          SELECT * FROM grouped WHERE \(query.selection) ORDER BY \(query.ordering) LIMIT ? OFFSET ?
         )
         SELECT selected.group_id,selected.anchor,base.payload FROM selected JOIN base USING(group_id)
         ORDER BY \(mode == .changes ? "selected.changed_at DESC," : "")selected.anchor IS NULL,selected.anchor,selected.group_id,base.release_id
@@ -216,6 +238,44 @@ public struct UpcomingWishlistStore: Sendable {
     }
   }
 
+  /// 计数与列表使用同一分组查询，按作品统计且不受分页截断。
+  public func count(mode: UpcomingBrowseMode, sources: [UpcomingSource], region: String? = nil,
+                    kind: String? = nil, now: Date = .now, unreadOnly: Bool = false) async throws -> Int {
+    guard !sources.isEmpty else { return 0 }
+    return try await queue.run { db in
+      let query = Self.query(mode: mode, sources: sources, region: region, kind: kind, now: now, unreadOnly: unreadOnly)
+      let stmt = try db.prepare(query.sql + " SELECT COUNT(*) FROM grouped WHERE " + query.selection)
+      defer { sqlite3_finalize(stmt) }
+      for (i, value) in query.values.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), value) }
+      guard sqlite3_step(stmt) == SQLITE_ROW else { throw DatabaseError(message: "关注动态计数失败") }
+      return db.int(stmt, 0) ?? 0
+    }
+  }
+
+  /// 只确认实际展示的事件，不能吞掉读取之后同步新插入的变化。
+  public func markRead(changeIDs: [Int]) async throws {
+    guard !changeIDs.isEmpty else { return }
+    try await queue.run { db in
+      let stmt = try db.prepare("INSERT OR IGNORE INTO upcoming_change_reads SELECT id FROM upcoming_want_changes WHERE id IN (" + changeIDs.map { _ in "?" }.joined(separator: ",") + ")")
+      defer { sqlite3_finalize(stmt) }
+      for (i, id) in changeIDs.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), id) }
+      guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError(message: "标记排期已读失败") }
+    }
+  }
+
+  public func hasUnread(for ids: [String], now: Date = .now) async throws -> Bool {
+    guard !ids.isEmpty else { return false }
+    return try await queue.run { db in
+      let stmt = try db.prepare("SELECT 1 FROM upcoming_want_changes c WHERE release_id IN (" + ids.map { _ in "?" }.joined(separator: ",") + ") AND observed_at>=? AND NOT EXISTS(SELECT 1 FROM upcoming_change_reads r WHERE r.change_id=c.id) LIMIT 1")
+      defer { sqlite3_finalize(stmt) }
+      for (i, id) in ids.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), id) }
+      SQLiteDatabase.bind(stmt, Int32(ids.count + 1), Int(now.timeIntervalSince1970) - 90 * 86400)
+      let status = sqlite3_step(stmt)
+      guard status == SQLITE_ROW || status == SQLITE_DONE else { throw DatabaseError(message: "未读排期读取失败") }
+      return status == SQLITE_ROW
+    }
+  }
+
   public func inactiveIDs(for ids: [String]) async throws -> Set<String> {
     guard !ids.isEmpty else { return [] }
     return try await queue.run { db in
@@ -232,10 +292,11 @@ public struct UpcomingWishlistStore: Sendable {
     guard !ids.isEmpty else { return [] }
     return try await queue.run { db in
       let stmt = try db.prepare("""
-        SELECT id,release_id,reason,before_payload,after_payload,observed_at FROM (
-          SELECT *,ROW_NUMBER() OVER(PARTITION BY release_id ORDER BY observed_at DESC,id DESC) AS position
+        SELECT id,release_id,reason,before_payload,after_payload,observed_at,
+          EXISTS(SELECT 1 FROM upcoming_change_reads r WHERE r.change_id=id) FROM (
+          SELECT *,ROW_NUMBER() OVER(PARTITION BY release_id ORDER BY EXISTS(SELECT 1 FROM upcoming_change_reads r WHERE r.change_id=upcoming_want_changes.id),observed_at DESC,id DESC) AS position
           FROM upcoming_want_changes WHERE release_id IN (\(ids.map { _ in "?" }.joined(separator: ","))) AND observed_at>=?
-        ) WHERE position<=10 ORDER BY observed_at DESC,id DESC
+        ) WHERE position<=10 ORDER BY 7,observed_at DESC,id DESC
         """)
       defer { sqlite3_finalize(stmt) }
       for (i, id) in ids.enumerated() { SQLiteDatabase.bind(stmt, Int32(i + 1), id) }
@@ -245,7 +306,7 @@ public struct UpcomingWishlistStore: Sendable {
         let before = try JSONDecoder().decode(UpcomingRelease.self, from: Data(db.text(stmt, 3)!.utf8))
         let after = try db.text(stmt, 4).map { try JSONDecoder().decode(UpcomingRelease.self, from: Data($0.utf8)) }
         result.append(UpcomingWantChange(id: db.int(stmt, 0)!, releaseID: db.text(stmt, 1)!, reason: db.text(stmt, 2)!,
-          before: before, after: after, observedAt: Date(timeIntervalSince1970: Double(db.int(stmt, 5)!))))
+          before: before, after: after, observedAt: Date(timeIntervalSince1970: Double(db.int(stmt, 5)!)), isRead: db.int(stmt, 6) == 1))
       }
       return result
     }

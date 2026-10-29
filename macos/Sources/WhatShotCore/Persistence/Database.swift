@@ -203,6 +203,12 @@ enum Schema {
   );
   CREATE INDEX IF NOT EXISTS idx_upcoming_want_changes_release ON upcoming_want_changes(release_id,observed_at);
 
+  CREATE TABLE IF NOT EXISTS upcoming_change_reads (
+    change_id INTEGER PRIMARY KEY
+  );
+  CREATE TRIGGER IF NOT EXISTS cleanup_upcoming_change_read AFTER DELETE ON upcoming_want_changes
+  BEGIN DELETE FROM upcoming_change_reads WHERE change_id=OLD.id; END;
+
   CREATE TABLE IF NOT EXISTS upcoming_source_state (
     source TEXT PRIMARY KEY,
     last_attempt_at INTEGER,

@@ -8,6 +8,12 @@ struct WatchlistTabView: View {
   @State private var rows: [VideoRepository.WatchlistRow] = []
   /// 本次进入时读到的更新明细：展示后立即推进水位（已读），明细保留到下次进入
   @State private var updates: [VideoRepository.WatchlistUpdate] = []
+  @State private var entries: [WatchlistChartEntry] = []
+  @State private var mode = "all"
+  @State private var since: Date?
+  @State private var readError: String?
+  @State private var generation = UUID()
+  @Environment(\.scenePhase) private var scenePhase
   @State private var loading = false
   @State private var detailTarget: VideoRepository.VideoRow?
 
@@ -21,11 +27,16 @@ struct WatchlistTabView: View {
       .padding(.horizontal, 20)
       .padding(.top, 18)
 
-      if !updates.isEmpty {
-        updatesSection
-          .padding(.horizontal, 20)
-          .padding(.top, 14)
-      }
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 10) {
+          ActivityShortcut(title: "全部追剧", count: rows.count, icon: "bookmark", selected: mode == "all") { mode = "all" }
+          ActivityShortcut(title: "集数有变化", count: updates.count, icon: "play.rectangle", selected: mode == "updates") { mode = "updates" }
+          ActivityShortcut(title: "近期新上榜", count: Set(entries.map(\.videoID)).count, icon: "flame", selected: mode == "entries") { mode = "entries" }
+        }
+      }.padding(.horizontal, 20).padding(.top, 14)
+      Text("集数对比上次查看；新上榜为近 48 小时关注后的站内入榜记录，各榜独立。")
+        .font(.system(size: 10)).foregroundStyle(Theme.textTertiary).padding(.horizontal, 20).padding(.top, 8)
+      if let readError { Text(readError).font(.system(size: 11)).foregroundStyle(Theme.accent).padding(.horizontal, 20) }
 
       headerDivider
         .padding(.top, 14)
@@ -39,6 +50,32 @@ struct WatchlistTabView: View {
         Spacer()
         emptyState
         Spacer()
+      } else if mode == "updates" {
+        ScrollView {
+          if updates.isEmpty { Text("自上次查看以来没有集数变化").foregroundStyle(Theme.textSecondary).padding(24) }
+          else { updatesSection.padding(20) }
+        }
+      } else if mode == "entries" {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 12) {
+            if entries.isEmpty { Text("近 48 小时没有可确认的新入榜记录").foregroundStyle(Theme.textSecondary).padding(24) }
+            ForEach(entries) { entry in
+              if let row = rows.first(where: { $0.video.id == entry.videoID }) {
+                Button { detailTarget = row.video } label: {
+                  HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                      Text(row.video.title.decodingHTMLEntities).font(.system(size: 13, weight: .bold))
+                      Text(entry.scope.label + " · 入榜时 #\(entry.rank)").font(.system(size: 11)).foregroundStyle(Theme.accent)
+                      Text("本地发现 " + ContentView.relativeTime(entry.observedAt)).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").foregroundStyle(Theme.accent)
+                  }.padding(14).background(Theme.elevated, in: RoundedRectangle(cornerRadius: Theme.radiusCard))
+                }.buttonStyle(.plain)
+              }
+            }
+          }.padding(20)
+        }
       } else {
         listSection
       }
@@ -49,7 +86,10 @@ struct WatchlistTabView: View {
     .onChange(of: app.lastSummary) { _, _ in
       Task { await reload(markViewed: false) }
     }
-    .sheet(item: $detailTarget) { target in
+    .onChange(of: scenePhase) { _, phase in
+      if phase == .active { Task { await reload(markViewed: false) } }
+    }
+    .sheet(item: $detailTarget, onDismiss: { Task { await reload(markViewed: false) } }) { target in
       DetailSheet(video: target, repo: app.repo)
     }
   }
@@ -146,6 +186,11 @@ struct WatchlistTabView: View {
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(Theme.textPrimary)
           .lineLimit(1)
+        if updates.contains(where: { $0.video.id == row.video.id }) || entries.contains(where: { $0.videoID == row.video.id }) {
+          Text([updates.contains(where: { $0.video.id == row.video.id }) ? "集数有变化" : nil,
+                entries.contains(where: { $0.videoID == row.video.id }) ? "近期新上榜" : nil].compactMap { $0 }.joined(separator: " · "))
+            .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent)
+        }
         HStack(spacing: 8) {
           if let episode {
             EpisodeStatusText(episode: episode)
@@ -188,14 +233,25 @@ struct WatchlistTabView: View {
   /// markViewed=true 仅进入页面时：先读明细展示，再推进水位（下次同步的变化从现在算起）
   private func reload(markViewed: Bool) async {
     guard let repo = app.repo else { return }
+    let token = UUID()
+    generation = token
     loading = rows.isEmpty
-    defer { loading = false }
-    if markViewed {
-      updates = (try? await repo.watchlistUpdates(since: watermarkBeforeViewing())) ?? []
-      app.markWatchlistViewed()
-    }
-    rows = (try? await repo.watchlistRows()) ?? []
-    await app.refreshWatchlistUnread()
+    let viewedAt = Date()
+    let baseline = since ?? watermarkBeforeViewing()
+    do {
+      let latestRows = try await repo.watchlistRows()
+      let latestUpdates = try await repo.watchlistUpdates(since: baseline)
+      let latestEntries = try await app.queue.map { LocalChartStore(queue: $0) }?.watchlistEntries() ?? []
+      guard !Task.isCancelled, token == generation else { return }
+      since = baseline
+      rows = latestRows
+      updates = latestUpdates.filter { update in latestRows.contains { $0.video.id == update.video.id } }
+      entries = latestEntries
+      if markViewed { app.markWatchlistViewed(at: viewedAt) }
+      readError = nil
+      await app.refreshWatchlistUnread()
+    } catch { if token == generation { readError = "关注动态读取失败，请重新进入页面重试" } }
+    if token == generation { loading = false }
   }
 
   /// 推进水位前先取旧水位：保证读到的是"上次查看以来"的变化而非本次进入瞬间的

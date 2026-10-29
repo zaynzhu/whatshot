@@ -7,16 +7,20 @@ struct UpcomingDetailSheet: View {
   @Environment(AppModel.self) private var app
   @Environment(\.dismiss) private var dismiss
   @State private var localVideo: VideoRepository.VideoRow?
+  @State private var changesPage = 0
+  @State private var remainingUnread = false
   @State private var changes: [UpcomingWantChange] = []
   @State private var inactiveIDs = Set<String>()
   @State private var watched = false
   @State private var savingWatch = false
   @State private var error: String?
 
+  private var localCharts: [LocalChartSignal] { connection.videoID.flatMap { app.localChartSignals[$0] } ?? [] }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
       HStack(alignment: .top, spacing: 18) {
-        SignalPoster(url: row.posterURL, signals: app.signals(for: connection)).frame(width: 112)
+        SignalPoster(url: row.posterURL, signals: app.signals(for: connection), localCharts: localCharts).frame(width: 112)
         VStack(alignment: .leading, spacing: 8) {
           Text(connection.chineseTitle ?? row.title).font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.textPrimary)
           if connection.chineseTitle != nil && connection.chineseTitle != row.title {
@@ -63,6 +67,13 @@ struct UpcomingDetailSheet: View {
           if row.releases.contains(where: { app.wantedReleaseIDs.contains($0.id) }) {
             Divider().overlay(Theme.hairline)
             UpcomingChangesView(changes: changes)
+            if remainingUnread {
+              OutlineButton(title: "还有未读变动 · 继续查看", icon: "chevron.down") { changesPage += 1 }
+            }
+          }
+          if !localCharts.isEmpty {
+            Divider().overlay(Theme.hairline)
+            LocalChartsPanel(signals: localCharts)
           }
           let signals = app.signals(for: connection)
           if !signals.isEmpty {
@@ -74,10 +85,16 @@ struct UpcomingDetailSheet: View {
       .frame(maxHeight: 320)
     }
     .padding(24).frame(width: 540).background(Theme.elevated)
-    .sheet(item: $localVideo) { video in DetailSheet(video: video, repo: app.repo) }
+    .sheet(item: $localVideo, onDismiss: {
+      Task {
+        do {
+          if let id = connection.videoID { watched = try await app.repo?.isWatched(videoID: id) ?? false }
+        } catch { self.error = "追剧状态读取失败，请重新打开详情" }
+      }
+    }) { video in DetailSheet(video: video, repo: app.repo) }
     .onChange(of: app.externalFocus) { _, _ in dismiss() }
-    // 从片库详情返回时重新读取追剧状态，避免保留弹窗内操作前的状态。
-    .task(id: "\(app.wishlistRevision)|\(app.upcomingRevision)|\(app.settings.enabledUpcomingSources)|\(localVideo?.id ?? 0)") {
+    // 来源与排期更新时重读本批变动；只确认当前详情实际载入的事件。
+    .task(id: "\(app.wishlistRevision)|\(app.upcomingRevision)|\(app.settings.enabledUpcomingSources)|\(changesPage)") {
       guard let queue = app.queue else { return }
       do {
         try await app.reloadWishlist()
@@ -86,7 +103,11 @@ struct UpcomingDetailSheet: View {
         changes = try await store.changes(for: ids)
         inactiveIDs = try await store.inactiveIDs(for: ids)
         if let id = connection.videoID { watched = try await app.repo?.isWatched(videoID: id) ?? false }
+        try Task.checkCancellation()
+        if localVideo == nil { try await store.markRead(changeIDs: changes.map(\.id)) }
+        remainingUnread = try await store.hasUnread(for: ids)
         error = nil
+      } catch is CancellationError {
       } catch { self.error = "想看记录读取失败，请重新打开详情" }
     }
   }

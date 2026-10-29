@@ -106,12 +106,13 @@ struct SignalPoster: View {
 struct WorkChartBadge: View {
   let local: [LocalChartSignal]
   let external: [ExternalHeatStore.DisplayRow]
+  var prefix = ""
   @Environment(AppModel.self) private var app
   @State private var expanded = false
 
   var body: some View {
     if local.isEmpty {
-      ExternalSignalBadge(signals: external)
+      ExternalSignalBadge(signals: external, prefix: prefix)
     } else {
       let fresh = local.filter { $0.isFresh() }
       let tier = WorkHeatTier.resolve(local: local, external: external)
@@ -127,7 +128,7 @@ struct WorkChartBadge: View {
         VStack(alignment: .leading, spacing: 4) {
           HStack(spacing: 5) {
             Image(systemName: shared ? "sparkles" : "flame.fill")
-            Text(title)
+            Text(prefix + title)
               .lineLimit(1).minimumScaleFactor(0.85)
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
@@ -197,6 +198,7 @@ struct LocalChartsPanel: View {
 
 struct ExternalSignalBadge: View {
   let signals: [ExternalHeatStore.DisplayRow]
+  var prefix = ""
   @State private var expanded = false
   @Environment(AppModel.self) private var app
 
@@ -206,7 +208,7 @@ struct ExternalSignalBadge: View {
       Button { expanded.toggle() } label: {
         HStack(spacing: 5) {
           Image(systemName: ExternalSignalPresentation.hasHeat(signals) ? "flame.fill" : "chart.bar.xaxis")
-          Text(ExternalSignalPresentation.label(signals)).lineLimit(1)
+          Text(prefix + ExternalSignalPresentation.label(signals)).lineLimit(1)
           Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
         }
         .font(.system(size: 11, weight: .bold))

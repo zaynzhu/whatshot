@@ -37,6 +37,12 @@ struct UpcomingWantButton: View {
 
 struct UpcomingChangesView: View {
   let changes: [UpcomingWantChange]
+  private func changeColor(_ change: UpcomingWantChange) -> Color {
+    if change.label.contains("提前") || change.label.contains("公布") { return .mint }
+    if change.label.contains("延期") || change.label.contains("推迟") { return .orange }
+    if change.label.contains("撤回") || change.label == "移出片单" { return .pink }
+    return Theme.accent
+  }
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Label("排期变动", systemImage: "arrow.triangle.2.circlepath")
@@ -46,14 +52,14 @@ struct UpcomingChangesView: View {
       }
       ForEach(changes) { change in
         VStack(alignment: .leading, spacing: 4) {
-          Text(change.before.source.title + " · " + change.reason)
-            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
+          Text((change.isRead ? "" : "未读 · ") + change.before.source.title + " · " + change.label)
+            .font(.system(size: 11, weight: .semibold)).foregroundStyle(changeColor(change))
           Text(change.summary).font(.system(size: 11)).foregroundStyle(Theme.textPrimary)
           Text("本地发现 " + ContentView.relativeTime(change.observedAt))
             .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
         }
       }
-      Text("只记录关注后成功刷新发现的变动，保留最近 90 天，每个平台展示最近 10 次。移出片单不代表已上线。")
+      Text("只记录关注后成功刷新发现的变动，保留最近 90 天，每个平台优先展示 10 条未读，查看详情后记为已读。移出片单不代表已上线。")
         .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
     }
   }
