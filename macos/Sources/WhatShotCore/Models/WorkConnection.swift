@@ -6,6 +6,8 @@ public struct WorkConnection: Sendable, Equatable {
   public var mediaID: String?
   public var chineseTitle: String?
   public var basis: String?
+  // 仅供本地归并核验，不把中文译名当身份。
+  var verifiedIDs: [String: String] = [:]
   public static let empty = WorkConnection()
 
   public init(videoID: Int? = nil, mediaID: String? = nil, chineseTitle: String? = nil, basis: String? = nil) {

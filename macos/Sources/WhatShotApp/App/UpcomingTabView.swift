@@ -310,7 +310,7 @@ struct UpcomingTabView: View {
     guard let queue = app.queue else { return [] }
     if mode == .all {
       return try await UpcomingStore(queue: queue).works(sources: selectedSources,
-        region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, offset: offset)
+        region: selectedRegion, kind: kind == "all" ? nil : kind, window: window, externalEnabled: app.externalEnabled, offset: offset)
     }
     return try await UpcomingWishlistStore(queue: queue).works(mode: mode, sources: selectedSources,
       region: selectedRegion, kind: kind == "all" ? nil : kind, unreadOnly: onlyUnread, offset: offset)

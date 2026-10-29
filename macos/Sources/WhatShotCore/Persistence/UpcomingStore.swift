@@ -151,15 +151,18 @@ public struct UpcomingStore: Sendable {
 
   /// 先聚合作品再分页；避免同一作品跨页、跨日期或待定档重复占卡位。
   public func works(sources: [UpcomingSource], region: String? = nil, kind: String? = nil, window: UpcomingWindow = .future,
-                    now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
+                    externalEnabled: Bool = false, now: Date = .now, offset: Int = 0, limit: Int = 60) async throws -> [UpcomingWork] {
     guard !sources.isEmpty else { return [] }
     return try await queue.run { db in
+      let rows = try WorkConnectionStore.activeReleases(sources: sources, db: db)
+      let connections = try WorkConnectionStore.connections(for: rows, externalEnabled: externalEnabled, db: db)
+      let keys = try UpcomingGrouping.keys(rows: rows, connections: connections)
+      let groupingJSON = String(decoding: try JSONEncoder().encode(keys), as: UTF8.self)
       var conditions = ["active=1", "source IN (\(sources.map { _ in "?" }.joined(separator: ",")))"]
-      var values = Self.calendarValues(at: now) + sources.map(\.rawValue)
+      var values = Self.calendarValues(at: now) + [groupingJSON] + sources.map(\.rawValue)
       if let region { conditions.append("json_extract(payload,'$.region')=?"); values.append(region) }
       if let kind { conditions.append("kind=?"); values.append(kind) }
-      // 完整标题只折叠首尾空格和大小写，不删除季数、年份、副标题或版本标记。
-      // 同平台多个不同 ID 同名说明存在歧义，整组拆开，避免误并重拍作品。
+      // 身份和片单在同一队列快照读取；日期窗口与分页继续由 SQL 在归并后执行。
       let dateFilter: String
       switch window {
       case .future: dateFilter = "anchor>=grouped.today"
@@ -168,18 +171,12 @@ public struct UpcomingStore: Sendable {
       }
       let order = window == .recent ? "DESC" : "ASC"
       let stmt = try db.prepare("""
-        WITH calendar(region,today,past) AS (VALUES ('CN',?,?),('US',?,?)), base AS (
-          SELECT upcoming_releases.*,calendar.today,calendar.past,
-            json_array(lower(trim(title)),kind,json_extract(payload,'$.region'),
-            json_extract(payload,'$.releaseType')) AS candidate
-          FROM upcoming_releases JOIN calendar
+        WITH calendar(region,today,past) AS (VALUES ('CN',?,?),('US',?,?)),
+        work_keys AS (SELECT key AS release_id,value AS work_key FROM json_each(?)), keyed AS (
+          SELECT upcoming_releases.*,calendar.today,calendar.past,work_keys.work_key
+          FROM upcoming_releases JOIN work_keys ON work_keys.release_id=upcoming_releases.id JOIN calendar
             ON calendar.region=CASE WHEN json_extract(payload,'$.region')='US' THEN 'US' ELSE 'CN' END
           WHERE \(conditions.joined(separator: " AND "))
-        ), ambiguous AS (
-          SELECT candidate FROM base GROUP BY candidate,source HAVING COUNT(*)>1
-        ), keyed AS (
-          SELECT *, CASE WHEN candidate IN (SELECT candidate FROM ambiguous)
-            THEN json_array(candidate,id) ELSE candidate END AS work_key FROM base
         ), grouped AS (
           SELECT work_key, MIN(today) AS today, MIN(past) AS past,
             COALESCE(MIN(CASE WHEN release_date>=today THEN release_date END),MAX(release_date)) AS anchor

@@ -291,6 +291,9 @@ struct UpcomingScheduleList: View {
             HStack(alignment: .top) {
               VStack(alignment: .leading, spacing: 4) {
                 Text(release.source.title).font(.system(size: 11, weight: .semibold))
+                if Set(releases.map(\.title)).count > 1 {
+                  Text(release.title).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                }
                 Text(release.region == "US" ? "美国 · 数字付费 · 报道排期" : "中国大陆 · 北京时间")
                   .font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
                 if release.region == "US" { Text("官宣状态未核实").font(.system(size: 10)).foregroundStyle(Theme.textTertiary) }
