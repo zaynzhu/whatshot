@@ -45,7 +45,7 @@ struct DetailSheet: View {
   private var detailContent: some View {
     HStack(alignment: .top, spacing: 18) {
       // 左：大海报（与画廊同源组件，固定宽）
-      SignalPoster(url: video.posterURL, signals: externalSignals)
+      SignalPoster(url: video.posterURL, signals: externalSignals, localCharts: app.localChartSignals[video.id] ?? [])
         .frame(width: 180)
         .fixedSize()
 
@@ -97,6 +97,10 @@ struct DetailSheet: View {
         if !upcomingReleases.isEmpty {
           Divider().overlay(Theme.hairline)
           UpcomingScheduleList(releases: upcomingReleases)
+        }
+        if let charts = app.localChartSignals[video.id], !charts.isEmpty {
+          Divider().overlay(Theme.hairline)
+          LocalChartsPanel(signals: charts)
         }
         if !externalSignals.isEmpty {
           Divider().overlay(Theme.hairline)

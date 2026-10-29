@@ -353,7 +353,7 @@ struct GalleryCard: View {
         }
         .padding(.bottom, 1)
       }
-      SignalPoster(url: video.posterURL, signals: app.signals(forVideo: video.id))
+      SignalPoster(url: video.posterURL, signals: app.signals(forVideo: video.id), localCharts: app.localChartSignals[video.id] ?? [])
       Text(video.title.decodingHTMLEntities)
         .font(.system(size: 12.5, weight: .semibold))
         .foregroundStyle(Theme.textPrimary)
@@ -376,7 +376,7 @@ struct GalleryCard: View {
             ? "来源：站方（butai0），已排除明确标注的特殊场次\n原始上映信息：\(video.releaseInfo ?? "未知")"
             : "来源：\(video.premiereDate == nil ? "影片年份" : video.premiereSource ?? "未知")\n原始上映信息：\(video.releaseInfo ?? "未知")")
       }
-      ExternalSignalBadge(signals: app.signals(forVideo: video.id))
+      WorkChartBadge(local: app.localChartSignals[video.id] ?? [], external: app.signals(forVideo: video.id))
       VideoMetaLine(video: video, showDefinition: showDefinition)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

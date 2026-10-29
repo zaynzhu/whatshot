@@ -31,6 +31,7 @@ public final class AppModel {
   public private(set) var upcomingError: String?
   public private(set) var upcomingRevision = 0
   var externalRows: [ExternalHeatStore.DisplayRow] = []
+  private(set) var localChartSignals: [Int: [LocalChartSignal]] = [:]
   var externalRevision = 0
   struct ExternalFocus: Equatable {
     let token = UUID()
@@ -48,6 +49,11 @@ public final class AppModel {
 
   func signals(forVideo id: Int) -> [ExternalHeatStore.DisplayRow] {
     externalEnabled ? externalRows.filter { $0.video?.id == id } : []
+  }
+
+  func reloadLocalCharts() async {
+    guard let queue else { return }
+    if let signals = try? await LocalChartStore(queue: queue).signals() { localChartSignals = signals }
   }
 
   func signals(for connection: WorkConnection) -> [ExternalHeatStore.DisplayRow] {
@@ -124,6 +130,7 @@ public final class AppModel {
       try await newRepo.normalizeMovieReleaseDates()
       queue = newQueue
       repo = newRepo
+      await reloadLocalCharts()
       await reloadExternalRows()
       try await repo?.recoverInterruptedRuns(at: Date())
       // 启动后台同步：距上次同步超过间隔才跑
@@ -287,6 +294,7 @@ public final class AppModel {
     activeEngineTask = engineTask
     let summary = await engineTask.value
     lastSummary = summary
+    await reloadLocalCharts()
     await reloadExternalRows()
     lastSyncFinishedAt = Date()
     // failed 才是红色错误；warning（主数据成功，部分步骤失败）走琥珀提示，hover 看详情；

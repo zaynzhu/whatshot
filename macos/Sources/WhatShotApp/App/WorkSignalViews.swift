@@ -5,16 +5,24 @@ import WhatShotCore
 struct SignalPoster: View {
   let url: String?
   let signals: [ExternalHeatStore.DisplayRow]
+  var localCharts: [LocalChartSignal] = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.scenePhase) private var scenePhase
   @State private var hovering = false
   @State private var sweepTrigger = UUID()
 
-  private var hot: Bool { ExternalSignalPresentation.hasHeat(signals) }
+  private var tier: WorkHeatTier { .resolve(local: localCharts, external: signals) }
+  private var hot: Bool { tier != .none }
+  private var hasRecords: Bool { !signals.isEmpty || !localCharts.isEmpty }
   private var fresh: [ExternalHeatStore.DisplayRow] { signals.filter { ExternalSignalPresentation.isFresh($0) } }
-  private var edgeColor: Color { hot ? Theme.accent : (fresh.isEmpty ? .gray : Color(red: 0.40, green: 0.78, blue: 0.85)) }
+  private var edgeColor: Color {
+    if tier == .local { return Color(red: 1, green: 0.39, blue: 0.24) }
+    return hot ? Theme.accent : (fresh.isEmpty ? .gray : Color(red: 0.40, green: 0.78, blue: 0.85))
+  }
   private var marker: String {
-    if hot { return "热榜" }
+    if tier == .shared { return "多榜共热" }
+    if tier == .local { return "站内热门" }
+    if tier == .external { return "外部热榜" }
     if fresh.isEmpty { return "旧记录" }
     let labels = Set(fresh.map { row in
       switch row.source {
@@ -33,22 +41,28 @@ struct SignalPoster: View {
 
   var body: some View {
     let animateSweep = hot && !reduceMotion && scenePhase == .active
+    let sweepColor = edgeColor
     return PosterImage(url: url, hovering: hovering)
       .overlay {
-        if !signals.isEmpty {
+        if hasRecords {
           RoundedRectangle(cornerRadius: Theme.radiusPoster)
-            .strokeBorder(edgeColor.opacity(fresh.isEmpty ? 0.65 : 1), lineWidth: hot ? 3 : 2)
-            .shadow(color: edgeColor.opacity(fresh.isEmpty ? 0 : (hovering ? 0.6 : 0.35)), radius: hovering ? 12 : 7)
+            .strokeBorder(edgeColor.opacity(!hot && fresh.isEmpty ? 0.65 : 1), lineWidth: tier == .shared ? 4 : (hot ? 3 : 2))
+            .shadow(color: edgeColor.opacity(!hot && fresh.isEmpty ? 0 : (hovering ? 0.6 : 0.35)), radius: hovering ? 12 : 7)
             .allowsHitTesting(false)
+          if tier == .shared {
+            RoundedRectangle(cornerRadius: Theme.radiusPoster - 3)
+              .inset(by: 5).strokeBorder(Color.white.opacity(0.85), lineWidth: 1)
+              .allowsHitTesting(false)
+          }
         }
       }
       .overlay(alignment: .bottomTrailing) {
-        if !signals.isEmpty {
-          Label(marker, systemImage: hot ? "flame.fill" : (fresh.isEmpty ? "clock" : "chart.bar.fill"))
+        if hasRecords {
+          Label(marker, systemImage: tier == .shared ? "sparkles" : (hot ? "flame.fill" : (fresh.isEmpty ? "clock" : "chart.bar.fill")))
             .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(fresh.isEmpty ? Color.white : Theme.bg)
+            .foregroundStyle(!hot && fresh.isEmpty ? Color.white : Theme.bg)
             .padding(.horizontal, 9).padding(.vertical, 6)
-            .background(edgeColor.opacity(fresh.isEmpty ? 0.9 : 1), in: RoundedRectangle(cornerRadius: 5))
+            .background(edgeColor.opacity(!hot && fresh.isEmpty ? 0.9 : 1), in: RoundedRectangle(cornerRadius: 5))
             .padding(8).allowsHitTesting(false)
         }
       }
@@ -57,8 +71,8 @@ struct SignalPoster: View {
           if animateSweep {
             RoundedRectangle(cornerRadius: Theme.radiusPoster)
               .trim(from: max(0, progress - 0.2), to: progress)
-              .stroke(LinearGradient(colors: [Theme.accent.opacity(0), .white, Theme.accent], startPoint: .topLeading, endPoint: .bottomTrailing), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
-              .shadow(color: Theme.accent.opacity(0.7), radius: 5)
+              .stroke(LinearGradient(colors: [sweepColor.opacity(0), .white, sweepColor], startPoint: .topLeading, endPoint: .bottomTrailing), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+              .shadow(color: sweepColor.opacity(0.7), radius: 5)
               .opacity(progress > 0 && progress < 1 ? 1 : 0)
               .allowsHitTesting(false)
           }
@@ -74,11 +88,110 @@ struct SignalPoster: View {
         hovering = value
         if value && hot && !reduceMotion && scenePhase == .active { sweepTrigger = UUID() }
       }
+      .onAppear {
+        if tier == .shared && !reduceMotion && scenePhase == .active { sweepTrigger = UUID() }
+      }
+      .onChange(of: tier) { _, new in
+        if new == .shared && !reduceMotion && scenePhase == .active { sweepTrigger = UUID() }
+      }
       .onChange(of: fingerprint) { old, _ in
         if !old.isEmpty && signals.contains(where: { ExternalSignalPresentation.rise($0) != nil }) && !reduceMotion && scenePhase == .active {
           sweepTrigger = UUID()
         }
       }
+  }
+}
+
+/// 同一作品统一展开站内与外部证据；不相加名次或生成综合分。
+struct WorkChartBadge: View {
+  let local: [LocalChartSignal]
+  let external: [ExternalHeatStore.DisplayRow]
+  @Environment(AppModel.self) private var app
+  @State private var expanded = false
+
+  var body: some View {
+    if local.isEmpty {
+      ExternalSignalBadge(signals: external)
+    } else {
+      let fresh = local.filter { $0.isFresh() }
+      let tier = WorkHeatTier.resolve(local: local, external: external)
+      let shared = tier == .shared
+      let active = tier != .none
+      let color = tier == .local ? Color(red: 1, green: 0.39, blue: 0.24) : Theme.accent
+      let first = fresh.first ?? local[0]
+      let days = fresh.map(\.consecutiveDays).max() ?? 1
+      let title = shared ? "多榜共热" : (fresh.isEmpty
+        ? (external.isEmpty ? "站内旧榜" : ExternalSignalPresentation.label(external))
+        : "\(first.scope.label) #\(first.rank)")
+      Button { expanded.toggle() } label: {
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 5) {
+            Image(systemName: shared ? "sparkles" : "flame.fill")
+            Text(title)
+              .lineLimit(1).minimumScaleFactor(0.85)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+          }.font(.system(size: 11, weight: .bold))
+          if fresh.count > 1 || shared {
+            let outside = Set(external.filter { ExternalSignalPresentation.isHeat($0.source) && ExternalSignalPresentation.isFresh($0) }.map(\.source)).count
+            Text("站内 \(fresh.count) 榜在列" + (shared ? " · 外部 \(outside) 榜" : ""))
+              .font(.system(size: 9.5, weight: .medium))
+          }
+          if days >= 2 {
+            Label("持续上榜 · \(days) 天", systemImage: "repeat")
+              .font(.system(size: 10, weight: .semibold))
+          }
+        }
+        .foregroundStyle(active ? Theme.bg : Theme.textSecondary)
+        .padding(.vertical, 7).padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(active ? color : Theme.elevated, in: RoundedRectangle(cornerRadius: 5))
+      }.buttonStyle(.plain)
+        .help("查看各榜名次、更新时间与持续上榜依据")
+        .popover(isPresented: $expanded) {
+          ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+              LocalChartsPanel(signals: local)
+              if !external.isEmpty {
+                Divider()
+                ExternalSignalsPanel(signals: external) { signal in
+                  expanded = false
+                  app.openExternal(signal)
+                }
+              }
+            }.padding(18)
+          }.frame(width: 350).frame(maxHeight: 480)
+        }
+    }
+  }
+}
+
+struct LocalChartsPanel: View {
+  let signals: [LocalChartSignal]
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Label("站内热门榜", systemImage: "flame.fill").font(.system(size: 13, weight: .bold))
+      ForEach(signals) { signal in
+        HStack(alignment: .top, spacing: 12) {
+          Text("#\(signal.rank)").font(.system(size: 18, weight: .bold).monospacedDigit())
+            .foregroundStyle(signal.isFresh() ? Theme.accent : Theme.textSecondary)
+            .frame(width: 42, alignment: .leading)
+          VStack(alignment: .leading, spacing: 3) {
+            Text(signal.scope.label).font(.system(size: 11, weight: .semibold))
+            Text((signal.isFresh() ? "更新于 " : "较早快照 · ") + ContentView.relativeTime(signal.observedAt))
+              .font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
+            if signal.isFresh(), signal.consecutiveDays >= 2 {
+              Text("连续 \(signal.consecutiveDays) 个日期的已采集快照均在榜")
+                .font(.system(size: 10)).foregroundStyle(Theme.accent)
+            }
+          }
+          Spacer(minLength: 0)
+        }
+      }
+      Text("近日／本周／本月均来自 butai0，名次独立，不合成分数。持续上榜按北京时间回看最多 14 天；缺日或已观察到离榜即中断，不推断未采样时段。")
+        .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+        .fixedSize(horizontal: false, vertical: true)
+    }.foregroundStyle(Theme.textPrimary)
   }
 }
 
