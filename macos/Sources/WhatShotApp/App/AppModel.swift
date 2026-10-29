@@ -38,6 +38,9 @@ public final class AppModel {
     let rowID: String
   }
   var externalFocus: ExternalFocus?
+  private(set) var syncingExternalHeat = false
+  private(set) var externalRefreshMessage: String?
+  private var externalHeatTask: Task<SyncEngine.PremiereBackfillSummary, Never>?
 
   var externalEnabled: Bool {
     settings.whatsnewEnabled == true && !(settings.whatsnewBaseURL ?? "").isEmpty
@@ -66,6 +69,24 @@ public final class AppModel {
       externalRevision += 1
     }
   }
+
+  /// 复用外部热度同步步骤；不等待片库探活、首播日与海报补全。
+  func refreshExternalHeat() async {
+    guard externalEnabled, !syncing, !syncingExternalHeat, let repo,
+          let baseURL = settings.whatsnewBaseURL else { return }
+    syncingExternalHeat = true
+    externalRefreshMessage = nil
+    defer { syncingExternalHeat = false; externalHeatTask = nil }
+    let client = WhatsNewClient(baseURL: baseURL)
+    let engine = SyncEngine(client: ButaiClient(baseURL: settings.baseURL), repo: repo, settings: settings)
+    let task = Task { await engine.syncExternalHeat(whatsnew: client) }
+    externalHeatTask = task
+    let result = await task.value
+    externalRefreshMessage = task.isCancelled ? "刷新已停止，已完成的数据保留" : result.warning
+    await reloadExternalRows()
+  }
+
+  func stopExternalHeat() { externalHeatTask?.cancel() }
   private var upcomingTask: Task<Void, Error>?
   private let upcomingClient = UpcomingClient()
 
@@ -117,6 +138,7 @@ public final class AppModel {
 
   /// 手动触发同步
   func syncNow() async {
+    guard !syncingExternalHeat else { return }
     async let main: Void = maybeSync(force: true)
     async let upcoming: Void = syncUpcoming(force: true)
     _ = await (main, upcoming)
@@ -126,6 +148,7 @@ public final class AppModel {
   /// 不中断事务、不留伪成功状态（收尾标 stopped，非 failed/success）
   func stopSync() {
     activeEngineTask?.cancel()
+    stopExternalHeat()
     stopUpcoming()
   }
 
@@ -188,7 +211,7 @@ public final class AppModel {
   }
 
   func maybeSync(force: Bool) async {
-    guard !syncing, let repo = repo else { return }
+    guard !syncing, !syncingExternalHeat, let repo = repo else { return }
     if !force {
       guard settings.syncIntervalHours > 0 else { return }
       // 未到间隔则跳过：读取最近一次成功同步时间
@@ -317,6 +340,10 @@ public final class AppModel {
 
   /// 保存设置：立即生效；间隔变更后重排任务；海报缓存容量立即接入加载器
   func updateSettings(_ newSettings: ButaiSettings) async {
+    if newSettings.whatsnewEnabled != settings.whatsnewEnabled || newSettings.whatsnewBaseURL != settings.whatsnewBaseURL {
+      stopExternalHeat()
+      externalRefreshMessage = nil
+    }
     if newSettings.enabledUpcomingSources != settings.enabledUpcomingSources
       || (newSettings.syncIntervalHours == 0 && settings.syncIntervalHours > 0) {
       stopUpcoming()

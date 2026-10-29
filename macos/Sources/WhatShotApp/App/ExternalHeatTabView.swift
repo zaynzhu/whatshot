@@ -25,12 +25,30 @@ struct ExternalHeatTabView: View {
         eyebrow: "EXTERNAL HEAT · WHATSNEW",
         title: "外部热度",
         subtitle: subtitle
-      )
+      ) {
+        if app.syncingExternalHeat {
+          OutlineButton(title: "停止刷新", icon: "xmark") { app.stopExternalHeat() }
+        } else {
+          OutlineButton(title: "刷新热度", icon: "arrow.clockwise") { Task { await app.refreshExternalHeat() } }
+            .disabled(!configured || app.syncing || app.queue == nil)
+            .help(app.syncing ? "主同步正在运行，完成后可独立刷新热度" : "只刷新外部榜单，不等待片库和海报补全")
+        }
+      }
       .padding(.horizontal, 20)
       .padding(.top, 18)
 
+      if app.syncingExternalHeat {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("正在刷新外部榜单…").font(.system(size: 11))
+        }.foregroundStyle(Theme.accent).padding(.horizontal, 20).padding(.top, 10)
+      } else if configured, let message = app.externalRefreshMessage {
+        Text(message).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+          .padding(.horizontal, 20).padding(.top, 10)
+      }
+
       // 错误横条：只在最近一次拉取失败时显示（正常时不占版面）
-      if let state, state.lastStatus != "ok", state.lastStatus != "never" {
+      if configured, let state, state.lastStatus != "ok", state.lastStatus != "never" {
         errorBanner(state)
           .padding(.horizontal, 20)
           .padding(.top, 12)
@@ -86,8 +104,8 @@ struct ExternalHeatTabView: View {
       if let mediaCount = state.lastMediaCount {
         parts.append("覆盖 \(mediaCount) 部作品")
       }
-      if let captured = rows.compactMap(\.capturedAt).first {
-        parts.append("站方采集 \(Self.shortTime(captured))")
+      if let fetched = state.lastSuccessAt {
+        parts.append("更新于 \(ContentView.relativeTime(fetched))")
       }
       return parts.isEmpty ? "榜单随同步更新，数据来自你的 WhatsNew 服务" : parts.joined(separator: " · ")
     }
@@ -150,13 +168,13 @@ struct ExternalHeatTabView: View {
       Text("还没有外部热度数据")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(Theme.textSecondary)
-      Text("来自你的 WhatsNew 服务 · 约 25 秒拉完")
+      Text("来自你的 WhatsNew 服务 · 各榜采集时间独立展示")
         .font(.system(size: 11.5))
         .foregroundStyle(Theme.textTertiary)
-      AccentButton(title: app.syncing ? "同步中…" : "立即同步") {
-        Task { await app.syncNow() }
+      AccentButton(title: app.syncingExternalHeat ? "刷新中…" : "刷新热度") {
+        Task { await app.refreshExternalHeat() }
       }
-      .disabled(app.syncing)
+      .disabled(!configured || app.syncing || app.syncingExternalHeat || app.queue == nil)
       .padding(.top, 4)
     }
     .frame(maxWidth: .infinity)

@@ -129,6 +129,8 @@ struct ContentView: View {
         OutlineButton(title: "同步", icon: "arrow.clockwise") {
           Task { await app.syncNow() }
         }
+        .disabled(app.syncingExternalHeat)
+        .help(app.syncingExternalHeat ? "外部热度正在刷新，完成后可同步片库" : "同步片库与待播排期")
       }
     }
     .fixedSize()
