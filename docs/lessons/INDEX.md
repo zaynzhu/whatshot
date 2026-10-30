@@ -10,3 +10,5 @@
 | [client-server-deployment-skew.md](client-server-deployment-skew.md) | 客户端先行接入新端点而服务端未部署：404 静默降级 vs 如实报警的取舍 | ✅ 有现成方案 | 2026-09-23 |
 | [douban-403-entry-level-deadlock.md](douban-403-entry-level-deadlock.md) | 403 一律当 IP 风控停批时，条目级 403 钉子户把补全队列堵成死循环（诊断三步法+条目级/风控级区分修复） | ✅ 有现成方案 | 2026-09-29 |
 | [macos-open-silent-failure.md](macos-open-silent-failure.md) | `open` 返回成功但打包 App 进程不存在（两次），原因未定位——交付后必须 ps 验证 | 🔶 部分可用 | 2026-09-24 |
+| [upcoming-display-grouping-and-follow-identity.md](upcoming-display-grouping-and-follow-identity.md) | 展示去重不能改变平台收藏身份，部分关注／计数／取消必须共享明确范围 | ✅ 有现成方案 | 2026-10-30 |
+| [swiftui-popover-item-state.md](swiftui-popover-item-state.md) | 管理弹窗首开只有标题；改用 item 携带目标已实测，框架内部原因未核实 | ✅ 有现成方案（内部原因待验证） | 2026-10-30 |
