@@ -18,7 +18,7 @@
 </div>
 
 > [!TIP]
-> WhatShot is a **fully local** macOS app focused on two questions: is a show or movie **hot right now** (charts, ratings), and **how far along is it** (up to episode X / Y total / completed, ordered by premiere date). No backend, no account, no data leaving your machine.
+> WhatShot is a **fully local** macOS app for **chart activity**, **episode progress**, and **upcoming releases**, preserving each chart’s ranks and each platform’s regional schedule. No dedicated backend or app account is required. The library and follow records are stored locally; optional external queries and poster mirroring follow your settings.
 
 ## ✨ Features
 
@@ -30,8 +30,10 @@
 - **Watchlist & update digest** -- One-click follow in the detail sheet; a dedicated "追剧" (Watchlist) tab shows latest episodes, completion status and last check time. Titles that drop off the charts are still checked each sync round (up to 20 per run, least-recently-checked first); episode changes since your last visit (e.g. "up to 9 → up to 12") are summarized at the top, with a tab dot that clears on visit
 - **Douban / IMDb ratings** -- Aggregated rating signals per card in monospaced digits
 - **External heat (optional WhatsNew integration)** -- Point the app at your self-hosted WhatsNew service (NAS/LAN) to browse its source charts (Netflix weekly, Youku/iQiyi/Tencent reservation, bilibili and more) as a poster wall in the "External heat" tab: pick one source chart at a time (ranks across charts are never mixed), with rank badges and movement marks. Titles that exactly match your local library open the local detail sheet for following; Douban-rated titles additionally show a WhatsNew Douban rating comparison (votes and capture time) in the detail sheet. Requests fire only when explicitly enabled with a service address; **followed titles are automatically looked up against WhatsNew every sync** (getting real ranks and a Douban rating comparison even when outside the trending 50; silently skipped while the deployed service lacks the endpoint, live once deployed); chart semantics are labeled honestly (Douban TOP250 reputation / upcoming order / reservation show no movement marks) and no cross-source ranking is invented
+- **Upcoming releases** -- Youku, iQiyi and Tencent platform schedules plus US VOD/PVOD reporting from When to Stream, combined by default with region/source/type filters. Known times stay precise; unknown times are never filled with midnight. US dates remain local calendar dates, with official confirmation marked unverified. Exact titles or verified movie identities can group platform schedules; conflicting identities stay separate. See the [source and date rules](docs/plans/upcoming-timeline.md).
+- **Connected posters & want-to-watch** -- Local chart and external heat badges, separate 14-day chart histories, verified Chinese titles for US movies, and platform-specific release follows. Ranks are never combined.
 - **Lightweight resident footprint** -- ~15MB idle memory, single-file SQLite, tunable poster cache, zero idle timers
-- **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 requests per run), manual trigger or off
+- **Low-frequency auto sync** -- A short sync every 6 hours by default (~10–20 base requests for the main source; upcoming sources additionally fetch complete bounded lists), manual trigger or off
 - **Transparent sync status** -- The header status distinguishes "synced / partially completed / failed / stopped" and ages over time; the live phase and backfill counters show while syncing, and you can stop a run anytime (committed data is kept, remaining backfills resume next round); click the status to expand a per-step breakdown (per-chart and backfill results, error details and retry notes) — minor hiccups like Douban rate-limiting no longer masquerade as failures
 - **Data-source resilience** -- domains auto-discovered from the publish page (with a built-in fallback pool), probe-based auto-selection, instant failover on errors, tolerant field parsing, placeholder-poster interception
 - **Late-night gallery design** -- Dark monochrome-amber visual language, editorial typography, pure native SwiftUI
@@ -89,7 +91,21 @@ Click "追剧" (Follow) in a detail sheet to watch a title; the "追剧" (Watchl
 
 **Tune sync & cache**
 
-The "设置" (Settings) tab lets you optionally pin a custom domain (highest priority when set; leave empty to use the official domain pool — each sync first discovers the latest domains from the publish page, then probes and picks the fastest official route, failing over automatically), tune sync frequency and the poster cache limit (300MB by default, lower or off), and shows the current route with measured latency and disk usage.
+The "设置" (Settings) tab lets you optionally pin a custom domain (highest priority when set; leave empty to use the official domain pool — each sync first discovers the latest domains from the publish page, then probes and picks the fastest official route, failing over automatically), tune sync frequency and the poster cache limit (300MB by default, lower or off), and shows the current route with measured latency and disk usage. With S3 configured, existing disk images remain readable but new downloads are not written to disk. Turning the cache off disables both disk reads and writes without deleting existing files.
+
+**Browse movies and connected charts**
+
+Movies default to “新片优先” (newest source year), with resource-update sorting available. A year is not an exact release date; displayed movie dates come from stored qualifying theatrical or online release information, excluding festivals, previews and re-releases.
+
+Series and movies can filter local charts, external heat, or both. Poster badges distinguish local popularity, external heat, reservations, ratings and older records. “多榜共热” requires both fresh local and external heat; each chart keeps its own rank. Motion is limited and respects Reduce Motion. Details show separate 14-day histories, with missing observations left blank. External heat has its own refresh action.
+
+**Follow upcoming releases**
+
+“即将上线” combines domestic and US schedules by default; filters preserve region, platform, type and date boundaries. US VOD/PVOD reporting does not prove official confirmation, a particular store, rental/purchase terms, or an exact time. Dates do not prove availability. With TMDB configured, US movie names are localized only after original-title, year, director and unique-candidate checks; uncertain matches retain the original title.
+
+“想看” follows the platforms on the visible card. “已关注 X/Y 个平台” opens management to add remaining platforms or cancel the explicitly listed ones. Cancellation clears their follows and schedule-change history; hidden platforms remain untouched. Display grouping preserves each platform’s follow time and history. Unfollowed platforms in a grouped card are suggestions only and cannot trigger today/this-week counts.
+
+“My wants”, today, this week and unread changes count grouped works under the active filters. Successful snapshots record changes after following; failed refreshes do not invent changes. Details mark only displayed events read, keeping later arrivals unread. The watchlist separately offers episode changes and new local chart entries within 48 hours after following. These are in-app signals without extra requests or system notifications. See [connections and follow rules](docs/plans/work-connections.md).
 
 **Browse external heat (optional)**
 
@@ -100,6 +116,8 @@ If you self-host [WhatsNew](https://github.com/zaynzhu/whatsnew) on your NAS, en
 | Doc | Description |
 |-----|-------------|
 | [docs/requirements.md](docs/requirements.md) | Confirmed requirements, butai0 API research (field semantics, pitfalls), architecture decisions |
+| [Upcoming timeline](docs/plans/upcoming-timeline.md) | Source contracts, regional dates, time precision and snapshot failure behavior |
+| [Work connections & follows](docs/plans/work-connections.md) | Verified titles, chart links, grouping and platform follow management |
 | [AGENTS.md](AGENTS.md) | Project rules: layout, resource constraints, security red lines |
 | [docs/lessons/INDEX.md](docs/lessons/INDEX.md) | Lessons learned: verified pitfalls with ready solutions (check before debugging) |
 
